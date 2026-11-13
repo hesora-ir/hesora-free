@@ -1,0 +1,28 @@
+name: Go core tests
+
+on:
+  pull_request:
+    branches: [main, "phase-2/**", "phase-3/**", "phase-4/**", "phase-5/**", "phase-6/**", "phase-7/**"]
+  push:
+    branches: [main, "phase-2/**", "phase-3/**", "phase-4/**", "phase-5/**", "phase-6/**", "phase-7/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.1"
+          cache: true
+      - name: Download modules
+        run: go mod download
+      - name: Test domain, storage, exports and licensing
+        run: go test ./internal/...
+      - name: Vet domain, storage, exports and licensing
+        run: go vet ./internal/...

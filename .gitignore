@@ -1,0 +1,8 @@
+build/
+installer.zip
+artifacts
+installer
+
+./build
+
+./installer
