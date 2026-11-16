@@ -9,72 +9,40 @@ import (
 	osExec "os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hesora-ir/hesora-free/internal/adapters/sqlite"
 	"github.com/hesora-ir/hesora-free/internal/application"
+	"github.com/hesora-ir/hesora-free/internal/cloud"
 	"github.com/hesora-ir/hesora-free/internal/domain"
 	"github.com/hesora-ir/hesora-free/internal/licensing"
 	qt "github.com/mappu/miqt/qt6"
 )
 
 const appStyle = `
-QMainWindow, QWidget {
-    background: #f4f7fb;
-    color: #172b4d;
-    font-family: "Segoe UI", "Tahoma";
-    font-size: 10pt;
-}
-QTabWidget::pane {
-    border: 1px solid #e1e8f0;
-    border-radius: 12px;
-    background: #f4f7fb;
-    top: -1px;
-}
-QTabBar::tab {
-    background: #e9eff7;
-    color: #52647d;
-    border: 0;
-    border-radius: 8px;
-    padding: 12px 18px;
-    margin: 5px 3px;
-    min-width: 90px;
-    font-weight: 600;
-}
-QTabBar::tab:selected {
-    background: #155eef;
-    color: white;
-}
-QLineEdit, QComboBox, QDateEdit, QSpinBox {
-    background: white;
-    border: 1px solid #d6dfeb;
-    border-radius: 7px;
-    padding: 10px 12px;
-    min-height: 20px;
-    selection-background-color: #155eef;
-}
-QLineEdit:focus, QComboBox:focus {
-    border: 1px solid #155eef;
-}
-QPushButton {
-    background: #155eef;
-    color: white;
-    border: 0;
-    border-radius: 8px;
-    padding: 10px 16px;
-    min-height: 20px;
-    font-weight: 600;
-}
-QPushButton:hover { background: #004eeb; }
-QPushButton:pressed { background: #003bb5; }
-QLabel#pageTitle {
-    color: #102a56;
-    font-size: 19pt;
-    font-weight: 700;
-}
-QLabel#muted {
-    color: #718198;
-}
+QMainWindow, QWidget { background:#f3f5f8; color:#1d2a35; font-family:"IRANSansX","Tahoma"; font-size:10pt; }
+QTabWidget::pane { border:0; background:#f3f5f8; }
+QTabBar { qproperty-drawBase:0; }
+QLineEdit,QComboBox,QDateEdit,QSpinBox { background:white; border:1px solid #e1e6ed; border-radius:9px; padding:10px 12px; min-height:20px; selection-background-color:#7058ed; }
+QLineEdit:focus,QComboBox:focus { border:1px solid #7058ed; }
+QPushButton { background:#7058ed; color:white; border:0; border-radius:9px; padding:10px 16px; min-height:20px; font-weight:600; }
+QPushButton:hover { background:#604bd8; }
+QPushButton:pressed { background:#5140c5; }
+QLabel#pageTitle { color:#1d2a35; font-size:19pt; font-weight:700; }
+QLabel#muted { color:#788493; }
+QWidget#appSidebar { background:#192631; border:0; }
+QLabel#brandMark { background:#7058ed; color:white; border-radius:12px; font-size:19pt; font-weight:700; padding:9px; }
+QLabel#brandTitle { color:white; font-size:14pt; font-weight:700; }
+QLabel#sidebarCaption { color:#8997a4; font-size:9pt; padding:8px 10px; }
+QPushButton#navItem { background:transparent; color:#b9c4cf; border:0; border-radius:9px; text-align:right; padding:12px 14px; min-height:24px; }
+QPushButton#navItem:hover { background:#253440; color:white; }
+QPushButton#navItem:checked { background:#2c3946; color:white; font-weight:700; }
+QPushButton#navItem:checked:hover { background:#354553; }
+QWidget#appTopbar { background:white; border:1px solid #e5e9ef; border-radius:12px; }
+QLineEdit#quickSearch { background:#f5f6f9; border:0; }
+QWidget#appContent { background:#f3f5f8; }
+QWidget#surface { background:white; border:1px solid #e5e9ef; border-radius:15px; }
 `
 
 // Set at release build time to the public key whose matching private key is held by Hesora.
@@ -97,6 +65,11 @@ func main() {
 	licensePublicKey, _ := base64.RawURLEncoding.DecodeString(hesoraLicensePublicKeyBase64)
 	if len(licensePublicKey) != ed25519.PublicKeySize {
 		licensePublicKey, _ = base64.StdEncoding.DecodeString(hesoraLicensePublicKeyBase64)
+	}
+	if len(licensePublicKey) != ed25519.PublicKeySize {
+		if savedKey, err := licenseFiles.ReadPublicKey(); err == nil {
+			licensePublicKey = savedKey
+		}
 	}
 	verifier := licensing.Verifier{PublicKey: ed25519.PublicKey(licensePublicKey), InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures()}
 	licenseToken, _ := licenseFiles.ReadToken()
@@ -183,21 +156,24 @@ func main() {
 	licenseDescription.SetWordWrap(true)
 	settingsPage.layout.AddWidget(licenseState.QWidget)
 	settingsPage.layout.AddWidget(licenseDescription.QWidget)
+	licenseBuildStatus := qt.NewQLabel5("", settingsPage.widget)
+	licenseBuildStatus.SetWordWrap(true)
+	if len(licensePublicKey) != ed25519.PublicKeySize {
+		licenseBuildStatus.SetText("کلید عمومی هنگام فعال‌سازی به‌صورت امن از سرور Hesora دریافت و برای بررسی آفلاین ذخیره می‌شود.")
+	} else {
+		licenseBuildStatus.SetText("کلید عمومی سرور برای بررسی لایسنس در این نصب ذخیره شده است.")
+	}
+	licenseBuildStatus.SetStyleSheet("color: #52647d; padding: 10px; background: #edf2f8; border-radius: 8px;")
+	settingsPage.layout.AddWidget(licenseBuildStatus.QWidget)
 	licenseTokenInput := qt.NewQLineEdit(settingsPage.widget)
-	licenseTokenInput.SetPlaceholderText("کد لایسنس دریافت‌شده پس از خرید")
+	licenseTokenInput.SetPlaceholderText("کد لایسنس خریداری‌شده از hesora.ir")
 	settingsPage.layout.AddWidget(licenseTokenInput.QWidget)
-	installationIDField := qt.NewQLineEdit(settingsPage.widget)
-	installationIDField.SetText(installationID)
-	installationIDField.SetReadOnly(true)
-	installationIDField.SetToolTip("برای صدور لایسنس متصل به این نصب، این شناسه را کپی کنید.")
-	settingsPage.layout.AddWidget(qt.NewQLabel5("شناسهٔ نصب برای خرید یا فعال‌سازی:", settingsPage.widget).QWidget)
-	settingsPage.layout.AddWidget(installationIDField.QWidget)
 	activateLicense := qt.NewQPushButton5("فعال‌سازی لایسنس پرو", settingsPage.widget)
 	settingsPage.layout.AddWidget(activateLicense.QWidget)
 	licenseActivationStatus := qt.NewQLabel5("", settingsPage.widget)
 	licenseActivationStatus.SetWordWrap(true)
 	settingsPage.layout.AddWidget(licenseActivationStatus.QWidget)
-	addCloudAndBackupSettings(settingsPage.widget, settingsPage.layout, store, licenseFiles, installationID, func() {
+	connectCloudWithLicense := addCloudAndBackupSettings(settingsPage.widget, settingsPage.layout, store, licenseFiles, installationID, func() {
 		store.SetProEnabled(false)
 		templates.SetProEnabled(false)
 		licenseState.SetText("Hesora رایگان")
@@ -346,36 +322,85 @@ func main() {
 			window.QWidget.SetStyleSheet(lightAppStyle(family, fontSizeSetting.Value()))
 		}
 	}
-	activateLicense.OnClicked(func() {
-		if installationErr != nil || len(licensePublicKey) != ed25519.PublicKeySize {
-			licenseActivationStatus.SetText("فعال‌سازی آماده است؛ برای صدور نسخهٔ نهایی باید کلید عمومی امضای Hesora در زمان ساخت برنامه تنظیم شود.")
-			return
-		}
-		result := verifier.Verify(licenseTokenInput.Text())
-		if !result.HasFeature(licensing.ProFullFeature) {
-			if result.Reason != nil {
-				licenseActivationStatus.SetText("لایسنس معتبر نیست: " + result.Reason.Error())
-			} else {
-				licenseActivationStatus.SetText("این لایسنس دسترسی Hesora Pro ندارد.")
+	type activationResult struct {
+		key     ed25519.PublicKey
+		license cloud.License
+		err     error
+	}
+	activationResults := make(chan activationResult, 1)
+	activationTimer := qt.NewQTimer2(settingsPage.widget.QObject)
+	activationTimer.OnTimeout(func() {
+		select {
+		case result := <-activationResults:
+			activationTimer.Stop()
+			activateLicense.SetEnabled(true)
+			if result.err != nil {
+				licenseActivationStatus.SetText("فعال‌سازی انجام نشد: " + result.err.Error())
+				return
 			}
-			return
-		}
-		if err := licenseFiles.SaveToken(licenseTokenInput.Text()); err != nil {
-			licenseActivationStatus.SetText("ذخیرهٔ لایسنس ناموفق بود: " + err.Error())
-			return
-		}
-		wasProEnabled := store.ProEnabled()
-		store.SetProEnabled(true)
-		templates.SetProEnabled(true)
-		licenseState.SetText("Hesora Pro فعال")
-		licenseDescription.SetText("لایسنس پرو فعال است. برای بکاپ ابری و مشاهده وضعیت حساب، در بخش اتصال به فضای ابری وارد شوید.")
-		if !wasProEnabled {
+			newVerifier := licensing.Verifier{PublicKey: result.key, InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures()}
+			verified := newVerifier.Verify(result.license.Token)
+			if !verified.HasFeature(licensing.ProFullFeature) {
+				if verified.Reason != nil {
+					licenseActivationStatus.SetText("تأیید لایسنس دریافتی ناموفق بود: " + verified.Reason.Error())
+				} else {
+					licenseActivationStatus.SetText("کد واردشده دسترسی Pro ندارد.")
+				}
+				return
+			}
+			if err := licenseFiles.SavePublicKey(result.key); err != nil {
+				licenseActivationStatus.SetText("ذخیرهٔ کلید عمومی ناموفق بود: " + err.Error())
+				return
+			}
+			if err := licenseFiles.SaveToken(result.license.Token); err != nil {
+				licenseActivationStatus.SetText("ذخیرهٔ لایسنس ناموفق بود: " + err.Error())
+				return
+			}
+			licensePublicKey = result.key
+			verifier = newVerifier
+			licenseTokenInput.SetText("")
+			store.SetProEnabled(true)
+			templates.SetProEnabled(true)
+			licenseState.SetText("Hesora Pro فعال")
+			licenseDescription.SetText("لایسنس پرو فعال است. برای بکاپ ابری و مشاهدهٔ حساب، به حساب وب خود وارد شوید.")
 			for _, choice := range proFontChoices {
 				fontSetting.AddItem(choice)
 			}
+			applyAppearance()
+			licenseActivationStatus.SetText("لایسنس فعال شد و به‌صورت خودکار به همین نصب متصل شد.")
+			connectCloudWithLicense(result.license.Token)
+		default:
 		}
-		applyAppearance()
-		licenseActivationStatus.SetText("لایسنس پرو با موفقیت فعال شد؛ محدودیت‌های نسخهٔ رایگان برداشته شدند.")
+	})
+	activateLicense.OnClicked(func() {
+		if installationErr != nil {
+			licenseActivationStatus.SetText("شناسهٔ داخلی نصب ساخته نشد: " + installationErr.Error())
+			return
+		}
+		code := strings.TrimSpace(licenseTokenInput.Text())
+		if code == "" {
+			licenseActivationStatus.SetText("کد لایسنس خریداری‌شده را وارد کنید.")
+			return
+		}
+		activateLicense.SetEnabled(false)
+		licenseActivationStatus.SetText("در حال دریافت کلید عمومی و فعال‌سازی لایسنس از Hesora…")
+		activationTimer.Start(100)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			client, err := cloud.New(hesoraCloudURL)
+			if err != nil {
+				activationResults <- activationResult{err: err}
+				return
+			}
+			key, err := client.PublicKey(ctx)
+			if err != nil {
+				activationResults <- activationResult{err: err}
+				return
+			}
+			license, err := client.ActivateLicense(ctx, code, installationID)
+			activationResults <- activationResult{key: key, license: license, err: err}
+		}()
 	})
 
 	saveSettings := qt.NewQPushButton5("ذخیره تنظیمات", settingsPage.widget)
@@ -421,7 +446,104 @@ func main() {
 		}
 	})
 	refreshDashboard()
-	window.SetCentralWidget(tabs.QWidget)
+	// Desktop shell: a permanent RTL sidebar keeps all major areas one click away.
+	tabs.TabBar().Hide()
+	shell := qt.NewQWidget(window.QWidget)
+	shellLayout := qt.NewQHBoxLayout2()
+	shellLayout.SetContentsMargins(0, 0, 0, 0)
+	shellLayout.SetSpacing(0)
+	shell.SetLayout(shellLayout.QLayout)
+
+	sidebar := qt.NewQWidget(shell)
+	setInvoiceObjectName(sidebar, "appSidebar")
+	sidebar.SetFixedWidth(224)
+	sidebarLayout := qt.NewQVBoxLayout2()
+	sidebarLayout.SetContentsMargins(15, 20, 15, 16)
+	sidebarLayout.SetSpacing(7)
+	sidebar.SetLayout(sidebarLayout.QLayout)
+	brandRow := qt.NewQHBoxLayout2()
+	brandMark := qt.NewQLabel5("هـ", sidebar)
+	setInvoiceObjectName(brandMark, "brandMark")
+	brandRow.AddWidget(brandMark.QWidget)
+	brandTitle := qt.NewQLabel5("هسورا\nمدیریت فروش", sidebar)
+	setInvoiceObjectName(brandTitle, "brandTitle")
+	brandRow.AddWidget(brandTitle.QWidget)
+	brandRow.AddStretch()
+	sidebarLayout.AddLayout(brandRow.QLayout)
+	sidebarLayout.AddSpacing(24)
+	caption := qt.NewQLabel5("فضای کاری", sidebar)
+	setInvoiceObjectName(caption, "sidebarCaption")
+	sidebarLayout.AddWidget(caption.QWidget)
+
+	navItems := []struct {
+		title string
+		icon  string
+		index int
+	}{{"نمای کلی", "⌂", 0}, {"صدور فاکتور", "+", 1}, {"فاکتورها و قالب‌ها", "▤", 2}, {"مشتریان", "♙", 3}, {"فروشگاه و اطلاعات بانکی", "⌂", 4}, {"تنظیمات و لایسنس", "⚙", 5}}
+	navButtons := make([]*qt.QPushButton, 0, len(navItems))
+	for _, item := range navItems {
+		button := qt.NewQPushButton5(item.icon+"   "+item.title, sidebar)
+		setInvoiceObjectName(button, "navItem")
+		button.SetCheckable(true)
+		index := item.index
+		button.OnClicked(func() {
+			tabs.SetCurrentIndex(index)
+			for i, navButton := range navButtons {
+				navButton.SetChecked(i == index)
+			}
+		})
+		navButtons = append(navButtons, button)
+		sidebarLayout.AddWidget(button.QWidget)
+	}
+	sidebarLayout.AddStretch()
+	sidebarFooter := qt.NewQLabel5("نسخهٔ رایگان هسورا\nتنظیمات و پشتیبانی", sidebar)
+	sidebarFooter.SetWordWrap(true)
+	setInvoiceObjectName(sidebarFooter, "sidebarCaption")
+	sidebarLayout.AddWidget(sidebarFooter.QWidget)
+	navButtons[0].SetChecked(true)
+
+	content := qt.NewQWidget(shell)
+	setInvoiceObjectName(content, "appContent")
+	contentLayout := qt.NewQVBoxLayout2()
+	contentLayout.SetContentsMargins(26, 18, 26, 22)
+	contentLayout.SetSpacing(18)
+	content.SetLayout(contentLayout.QLayout)
+	topbar := qt.NewQWidget(content)
+	setInvoiceObjectName(topbar, "appTopbar")
+	topbarLayout := qt.NewQHBoxLayout2()
+	topbarLayout.SetContentsMargins(16, 10, 16, 10)
+	topbarLayout.SetSpacing(12)
+	topbar.SetLayout(topbarLayout.QLayout)
+	search := qt.NewQLineEdit(topbar)
+	search.SetPlaceholderText("جست‌وجو در فاکتورها و مشتریان…")
+	search.SetMaximumWidth(390)
+	setInvoiceObjectName(search, "quickSearch")
+	topbarLayout.AddWidget(search.QWidget)
+	search.OnReturnPressed(func() {
+		query := strings.TrimSpace(search.Text())
+		switch {
+		case strings.Contains(query, "مشتری"):
+			tabs.SetCurrentIndex(3)
+		case strings.Contains(query, "فروشگاه"), strings.Contains(query, "بانک"):
+			tabs.SetCurrentIndex(4)
+		case strings.Contains(query, "تنظیم"), strings.Contains(query, "لایسنس"):
+			tabs.SetCurrentIndex(5)
+		case strings.Contains(query, "صدور"), strings.Contains(query, "جدید"):
+			tabs.SetCurrentIndex(1)
+		default:
+			tabs.SetCurrentIndex(2)
+		}
+		search.Clear()
+	})
+	topbarLayout.AddStretch()
+	topbarCreate := qt.NewQPushButton5("＋ فاکتور جدید", topbar)
+	topbarCreate.OnClicked(func() { tabs.SetCurrentIndex(1) })
+	topbarLayout.AddWidget(topbarCreate.QWidget)
+	contentLayout.AddWidget(topbar)
+	contentLayout.AddWidget(tabs.QWidget)
+	shellLayout.AddWidget(sidebar)
+	shellLayout.AddWidget(content)
+	window.SetCentralWidget(shell)
 	window.Show()
 	qt.QApplication_Exec()
 }
@@ -470,25 +592,32 @@ func addField(layout *qt.QHBoxLayout, parent *qt.QWidget, label, placeholder str
 
 func lightAppStyle(fontFamily string, fontSize int) string {
 	return fmt.Sprintf(`QMainWindow, QWidget { background: #f4f7fb; color: #172b4d; font-family: "%s"; font-size: %dpt; }
-QTabWidget::pane { border: 1px solid #e1e8f0; border-radius: 12px; background: #f4f7fb; top: -1px; }
+QTabWidget::pane { border: 0; background: #f3f5f8; top: -1px; }
 QTabBar::tab { background: #e9eff7; color: #52647d; border: 0; border-radius: 8px; padding: 12px 18px; margin: 5px 3px; min-width: 90px; font-weight: 600; }
-QTabBar::tab:selected { background: #155eef; color: white; }
+QTabBar::tab:selected { background: #7058ed; color: white; }
 QLineEdit, QComboBox, QDateEdit, QSpinBox { background: white; border: 1px solid #d6dfeb; border-radius: 7px; padding: 10px 12px; min-height: 20px; selection-background-color: #155eef; }
-QLineEdit:focus, QComboBox:focus { border: 1px solid #155eef; }
-QPushButton { background: #155eef; color: white; border: 0; border-radius: 8px; padding: 10px 16px; min-height: 20px; font-weight: 600; }
-QPushButton:hover { background: #004eeb; }
-QPushButton:pressed { background: #003bb5; }`+workspaceStyle(false), fontFamily, fontSize)
+QLineEdit:focus, QComboBox:focus { border: 1px solid #7058ed; }
+QPushButton { background: #7058ed; color: white; border: 0; border-radius: 8px; padding: 10px 16px; min-height: 20px; font-weight: 600; }
+QPushButton:hover { background: #604bd8; }
+QPushButton:pressed { background: #5140c5; }`+workspaceStyle(false)+shellStyle(false), fontFamily, fontSize)
 }
 
 func darkAppStyle(fontFamily string, fontSize int) string {
 	return fmt.Sprintf(`QMainWindow, QWidget { background: #111827; color: #e5e7eb; font-family: "%s"; font-size: %dpt; }
 QTabWidget::pane { border: 1px solid #374151; border-radius: 12px; background: #111827; top: -1px; }
 QTabBar::tab { background: #1f2937; color: #cbd5e1; border: 0; border-radius: 8px; padding: 12px 18px; margin: 5px 3px; min-width: 90px; font-weight: 600; }
-QTabBar::tab:selected { background: #2563eb; color: white; }
+QTabBar::tab:selected { background: #7058ed; color: white; }
 QLineEdit, QComboBox, QDateEdit, QSpinBox { background: #1f2937; color: #f9fafb; border: 1px solid #4b5563; border-radius: 7px; padding: 10px 12px; min-height: 20px; selection-background-color: #2563eb; }
-QPushButton { background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 10px 16px; min-height: 20px; font-weight: 600; }
-QPushButton:hover { background: #1d4ed8; }
-QLabel#muted { color: #9ca3af; }`+workspaceStyle(true), fontFamily, fontSize)
+QPushButton { background: #7058ed; color: white; border: 0; border-radius: 8px; padding: 10px 16px; min-height: 20px; font-weight: 600; }
+QPushButton:hover { background: #604bd8; }
+QLabel#muted { color: #9ca3af; }`+workspaceStyle(true)+shellStyle(true), fontFamily, fontSize)
+}
+
+func shellStyle(dark bool) string {
+	if dark {
+		return `QWidget#appSidebar{background:#192631;border:0;} QLabel#brandMark{background:#7058ed;color:white;border-radius:12px;font-size:19pt;font-weight:700;padding:9px;} QLabel#brandTitle{background:transparent;color:white;font-size:14pt;font-weight:700;} QLabel#sidebarCaption{background:transparent;color:#8997a4;font-size:9pt;padding:8px 10px;} QPushButton#navItem{background:transparent;color:#b9c4cf;border:0;border-radius:9px;text-align:right;padding:12px 14px;min-height:24px;} QPushButton#navItem:hover{background:#253440;color:white;} QPushButton#navItem:checked{background:#2c3946;color:white;font-weight:700;} QWidget#appTopbar{background:#1f2937;border:1px solid #374151;border-radius:12px;} QLineEdit#quickSearch{background:#263444;border:0;color:#e5e7eb;} QWidget#appContent{background:#111827;} QTabWidget::pane{background:#111827;}`
+	}
+	return `QWidget#appSidebar{background:#192631;border:0;} QLabel#brandMark{background:#7058ed;color:white;border-radius:12px;font-size:19pt;font-weight:700;padding:9px;} QLabel#brandTitle{background:transparent;color:white;font-size:14pt;font-weight:700;} QLabel#sidebarCaption{background:transparent;color:#8997a4;font-size:9pt;padding:8px 10px;} QPushButton#navItem{background:transparent;color:#b9c4cf;border:0;border-radius:9px;text-align:right;padding:12px 14px;min-height:24px;} QPushButton#navItem:hover{background:#253440;color:white;} QPushButton#navItem:checked{background:#2c3946;color:white;font-weight:700;} QWidget#appTopbar{background:white;border:1px solid #e5e9ef;border-radius:12px;} QLineEdit#quickSearch{background:#f5f6f9;border:0;} QWidget#appContent{background:#f3f5f8;} QTabWidget::pane{background:#f3f5f8;}`
 }
 
 // resolveApplicationIconPath finds the product-owned icon beside the process
@@ -524,6 +653,7 @@ QLabel#pageTitle { color: %s; font-size: 19pt; font-weight: 700; }
 QLabel#sectionTitle { color: %s; font-size: 11pt; font-weight: 700; }
 QLabel#muted { color: %s; }
 QLabel#metricValue { color: %s; font-size: 17pt; font-weight: 700; }
+QPushButton#primaryAction { background: #7058ed; color: white; }
 QLabel#grandTotal { background: %s; color: %s; padding: 18px; border-radius: 10px; font-size: 15pt; font-weight: 700; }
 QPushButton#secondaryAction { background: %s; color: %s; border: 1px solid %s; }
 QPushButton#removeItem { background: %s; color: %s; border: 1px solid %s; padding: 8px; }

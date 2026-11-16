@@ -1,6 +1,7 @@
 package licensing
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 const (
 	licenseFileName      = "license.token"
 	installationFileName = "installation.id"
+	publicKeyFileName    = "license-public.key"
 )
 
 type FileStore struct{ Directory string }
@@ -43,6 +45,24 @@ func (s FileStore) ClearToken() error {
 		return nil
 	}
 	return err
+}
+
+func (s FileStore) ReadPublicKey() (ed25519.PublicKey, error) {
+	data, err := os.ReadFile(filepath.Join(s.Directory, publicKeyFileName))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) != ed25519.PublicKeySize {
+		return nil, errors.New("کلید عمومی ذخیره‌شدهٔ لایسنس معتبر نیست")
+	}
+	return ed25519.PublicKey(data), nil
+}
+
+func (s FileStore) SavePublicKey(key ed25519.PublicKey) error {
+	if len(key) != ed25519.PublicKeySize {
+		return errors.New("کلید عمومی لایسنس معتبر نیست")
+	}
+	return atomicWrite(s.Directory, publicKeyFileName, key)
 }
 
 // InstallationID returns a stable random local identifier. It is a privacy-friendlier

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -116,6 +117,11 @@ func showCustomerInvoices(parent *qt.QWidget, contacts *application.Contacts, in
 	window.QWidget.SetLayoutDirection(qt.RightToLeft)
 	window.QWidget.SetWindowTitle("فاکتورهای مشتری — " + c.Name)
 	window.QWidget.SetMinimumSize2(760, 520)
+	window.QWidget.SetStyleSheet(`QMainWindow, QWidget { background:#f4f7fb; color:#172b4d; font-family:"Segoe UI","Tahoma"; }
+QLabel#surface { background:white; border:1px solid #dfe7f1; border-radius:12px; padding:14px 16px; color:#263b59; }
+QPushButton { background:#7058ed; color:white; border:0; border-radius:8px; padding:9px 13px; font-weight:600; }
+QPushButton#secondaryAction { background:#edf3fb; color:#23456f; border:1px solid #d8e3f1; }
+QPushButton#primaryAction { background:#7058ed; color:white; }`)
 	container := qt.NewQWidget(window.QWidget)
 	layout := qt.NewQVBoxLayout2()
 	layout.SetContentsMargins(22, 20, 22, 20)
@@ -148,7 +154,8 @@ func showCustomerInvoices(parent *qt.QWidget, contacts *application.Contacts, in
 		label.SetWordWrap(true)
 		setInvoiceObjectName(label, "surface")
 		layout.AddWidget(label.QWidget)
-		preview := qt.NewQPushButton5("مشاهده فاکتور "+inv.Number, container)
+		actions := qt.NewQHBoxLayout2()
+		preview := qt.NewQPushButton5("پیش‌نمایش", container)
 		preview.OnClicked(func() {
 			path, err := cachedInvoicePDF(ctx, record.ID, contacts, invoiceService, templates)
 			if err != nil {
@@ -157,7 +164,76 @@ func showCustomerInvoices(parent *qt.QWidget, contacts *application.Contacts, in
 			}
 			showInvoicePDFPreview(window.QWidget, path, record.Number)
 		})
-		layout.AddWidget(preview.QWidget)
+		actions.AddWidget(preview.QWidget)
+		if record.Status == "draft" || (record.Status == "issued" && record.Balance > 0) {
+			edit := qt.NewQPushButton5("ویرایش", container)
+			setInvoiceObjectName(edit, "secondaryAction")
+			edit.OnClicked(func() {
+				doc, err := invoiceService.Get(ctx, record.ID)
+				if err != nil {
+					qt.QMessageBox_Critical(window.QWidget, "بازکردن سند ناموفق بود", err.Error())
+					return
+				}
+				editorWindow := qt.NewQMainWindow2()
+				editorWindow.QWidget.SetLayoutDirection(qt.RightToLeft)
+				editorWindow.QWidget.SetWindowTitle("ویرایش سند " + record.Number)
+				editorWindow.QWidget.SetMinimumSize2(960, 700)
+				editor := buildInvoicePage(editorWindow.QWidget, contacts, invoiceService, ctx, &doc, invoiceEditorOptions{templates: templates, contacts: contacts})
+				editorWindow.SetCentralWidget(editor.widget)
+				editorWindow.Show()
+			})
+			actions.AddWidget(edit.QWidget)
+		}
+		pdf := qt.NewQPushButton5("خروجی PDF", container)
+		pdf.OnClicked(func() {
+			path := qt.QFileDialog_GetSaveFileName4(window.QWidget, "ذخیره فاکتور به PDF", record.Number+".pdf", "PDF (*.pdf)")
+			if path == "" {
+				return
+			}
+			if !strings.HasSuffix(strings.ToLower(path), ".pdf") {
+				path += ".pdf"
+			}
+			dir, name, err := findPDFFont()
+			if err == nil {
+				err = exportInvoiceFile(ctx, record.ID, path, "pdf", contacts, invoiceService, templates, dir, name)
+			}
+			if err != nil {
+				qt.QMessageBox_Critical(window.QWidget, "خروجی PDF ناموفق بود", err.Error())
+				return
+			}
+			qt.QMessageBox_Information(window.QWidget, "خروجی آماده شد", "فایل PDF ذخیره شد:\n"+path)
+		})
+		xlsx := qt.NewQPushButton5("خروجی Excel", container)
+		xlsx.OnClicked(func() {
+			path := qt.QFileDialog_GetSaveFileName4(window.QWidget, "ذخیره فاکتور به Excel", record.Number+".xlsx", "Excel Workbook (*.xlsx)")
+			if path == "" {
+				return
+			}
+			if !strings.HasSuffix(strings.ToLower(path), ".xlsx") {
+				path += ".xlsx"
+			}
+			if err := exportInvoiceFile(ctx, record.ID, path, "xlsx", contacts, invoiceService, templates, ""); err != nil {
+				qt.QMessageBox_Critical(window.QWidget, "خروجی Excel ناموفق بود", err.Error())
+				return
+			}
+			qt.QMessageBox_Information(window.QWidget, "خروجی آماده شد", "فایل Excel ذخیره شد:\n"+path)
+		})
+		actions.AddWidget(pdf.QWidget)
+		actions.AddWidget(xlsx.QWidget)
+		share := qt.NewQPushButton5("اشتراک‌گذاری", container)
+		setInvoiceObjectName(share, "primaryAction")
+		share.OnClicked(func() {
+			doc, err := invoiceService.Get(ctx, record.ID)
+			if err != nil {
+				qt.QMessageBox_Critical(window.QWidget, "خواندن فاکتور ناموفق بود", err.Error())
+				return
+			}
+			var snapshot invoicePartySnapshot
+			_ = json.Unmarshal([]byte(doc.CustomerSnapshot), &snapshot)
+			showInvoiceShareOptions(window.QWidget, doc, snapshot.Phone, ctx, contacts, invoiceService, templates)
+		})
+		actions.AddWidget(share.QWidget)
+		layout.AddLayout(actions.QLayout)
 	}
 	layout.AddStretch()
 	scroll := qt.NewQScrollArea(window.QWidget)

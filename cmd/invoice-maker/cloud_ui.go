@@ -18,7 +18,7 @@ var hesoraCloudURL = "https://hesora.ir"
 
 // All network and snapshot work runs outside the Qt event loop. Completion is
 // consumed by a parent-owned timer, so widget updates stay on the UI thread.
-func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store *sqlite.Store, files licensing.FileStore, installationID string, onRevoked func()) {
+func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store *sqlite.Store, files licensing.FileStore, installationID string, onRevoked func()) func(string) {
 	layout.AddWidget(sectionHeading(parent, "بکاپ و اتصال به فضای ابری"))
 	status := qt.NewQLabel5("بکاپ محلی بدون اشتراک در دسترس است. برای بکاپ ابری وارد حساب شوید.", parent)
 	status.SetWordWrap(true)
@@ -40,8 +40,14 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	layout.AddWidget(password.QWidget)
 	login := qt.NewQPushButton5("ورود به حساب ابری", parent)
 	logout := qt.NewQPushButton5("خروج از حساب ابری", parent)
+	logout.SetVisible(false)
 	upload := qt.NewQPushButton5("بکاپ‌گیری ابری از اطلاعات فعلی", parent)
 	refresh := qt.NewQPushButton5("مشاهده حساب و فهرست بکاپ‌ها", parent)
+	backupID := qt.NewQLineEdit(parent)
+	backupID.SetLayoutDirection(qt.LeftToRight)
+	backupID.SetPlaceholderText("شناسه بکاپ برای دریافت (از فهرست پایین کپی کنید)")
+	download := qt.NewQPushButton5("دانلود بکاپ انتخاب‌شده", parent)
+	deleteBackup := qt.NewQPushButton5("حذف بکاپ انتخاب‌شده", parent)
 	validate := qt.NewQPushButton5("بررسی آنلاین اعتبار لایسنس", parent)
 	panel := qt.NewQPushButton5("ساخت حساب و مدیریت بکاپ‌ها در پنل وب", parent)
 	panel.OnClicked(func() {
@@ -57,6 +63,10 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	for _, b := range []*qt.QPushButton{login, logout, upload, refresh, validate} {
 		layout.AddWidget(b.QWidget)
 	}
+	layout.AddWidget(qt.NewQLabel5("برای دریافت یک بکاپ، شناسهٔ آن را از فهرست حساب وارد کنید:", parent).QWidget)
+	layout.AddWidget(backupID.QWidget)
+	layout.AddWidget(download.QWidget)
+	layout.AddWidget(deleteBackup.QWidget)
 	layout.AddWidget(status.QWidget)
 	var client *cloud.Client
 	type completion struct {
@@ -65,7 +75,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	}
 	results := make(chan completion, 1)
 	busy := false
-	buttons := []*qt.QPushButton{local, login, logout, upload, refresh, validate}
+	buttons := []*qt.QPushButton{local, login, logout, upload, refresh, download, deleteBackup, validate}
 	timer := qt.NewQTimer2(parent.QObject)
 	timer.OnTimeout(func() {
 		select {
@@ -114,7 +124,11 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 		})
 	})
 	accountText := func(a cloud.Account) string {
-		summary := fmt.Sprintf("حساب: %s\nبکاپ‌ها: %d | مصرف فضا: %d کیلوبایت", a.User.Name, a.BackupCount, a.StorageBytes/1024)
+		cloudStatus := "فعال"
+		if !a.CloudEnabled {
+			cloudStatus = "غیرفعال؛ از پشتیبانی بخواهید دسترسی ابری را فعال کند"
+		}
+		summary := fmt.Sprintf("حساب: %s\nسرویس ابری: %s\nبکاپ‌ها: %d | مصرف فضا: %d کیلوبایت", a.User.Name, cloudStatus, a.BackupCount, a.StorageBytes/1024)
 		for _, l := range a.Licenses {
 			if l.InstallationID == installationID {
 				remaining := "دائمی"
@@ -125,6 +139,36 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			}
 		}
 		return summary
+	}
+	connectWithLicense := func(licenseToken string) {
+		if busy || strings.TrimSpace(licenseToken) == "" {
+			return
+		}
+		base := urlInput.Text()
+		run(func() (func(), error) {
+			next, err := cloud.New(base)
+			if err != nil {
+				return nil, err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := next.DeviceLogin(ctx, licenseToken, installationID); err != nil {
+				return nil, err
+			}
+			a, err := next.Account(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return func() {
+				client = next
+				urlInput.SetEnabled(false)
+				email.SetVisible(false)
+				password.SetVisible(false)
+				login.SetVisible(false)
+				logout.SetVisible(true)
+				status.SetText("اتصال با حساب خرید لایسنس برقرار شد.\n" + accountText(a))
+			}, nil
+		})
 	}
 	login.OnClicked(func() {
 		base, emailValue, passwordValue := urlInput.Text(), email.Text(), password.Text()
@@ -146,6 +190,10 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			return func() {
 				client = next
 				urlInput.SetEnabled(false)
+				email.SetVisible(false)
+				password.SetVisible(false)
+				login.SetVisible(false)
+				logout.SetVisible(true)
 				status.SetText("اتصال برقرار شد.\n" + accountText(a))
 			}, nil
 		})
@@ -169,6 +217,10 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			return func() {
 				client = nil
 				urlInput.SetEnabled(true)
+				email.SetVisible(true)
+				password.SetVisible(true)
+				login.SetVisible(true)
+				logout.SetVisible(false)
 				status.SetText("از حساب ابری خارج شدید.")
 			}, err
 		})
@@ -191,9 +243,60 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			}
 			text := accountText(a)
 			for _, b := range backups {
-				text += fmt.Sprintf("\n%s — %d کیلوبایت — %s", b.Name, b.Size/1024, time.Unix(b.CreatedAt, 0).Format("2006-01-02 15:04"))
+				text += fmt.Sprintf("\n%s — %d کیلوبایت — %s\nشناسه: %s", b.Name, b.Size/1024, time.Unix(b.CreatedAt, 0).Format("2006-01-02 15:04"), b.ID)
 			}
 			return func() { status.SetText(text) }, nil
+		})
+	})
+	download.OnClicked(func() {
+		if !requireClient() {
+			return
+		}
+		id := strings.TrimSpace(backupID.Text())
+		if id == "" {
+			status.SetText("ابتدا شناسه بکاپ را از فهرست بکاپ‌ها وارد کنید.")
+			return
+		}
+		path := qt.QFileDialog_GetSaveFileName4(parent, "ذخیره بکاپ ابری", "hesora-cloud-backup.db", "SQLite Backup (*.db)")
+		if path == "" {
+			return
+		}
+		if !strings.HasSuffix(strings.ToLower(path), ".db") {
+			path += ".db"
+		}
+		current := client
+		run(func() (func(), error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			if err := current.DownloadBackup(ctx, id, path); err != nil {
+				return nil, err
+			}
+			return func() { status.SetText("بکاپ دانلود و صحت checksum آن بررسی شد:\n" + path) }, nil
+		})
+	})
+	deleteBackup.OnClicked(func() {
+		if !requireClient() {
+			return
+		}
+		id := strings.TrimSpace(backupID.Text())
+		if id == "" {
+			status.SetText("ابتدا شناسه بکاپ را از فهرست بکاپ‌ها وارد کنید.")
+			return
+		}
+		answer := qt.QMessageBox_Question2(parent, "حذف بکاپ ابری", "این بکاپ برای همیشه حذف شود؟ این کار قابل بازگشت نیست.", qt.QMessageBox__Yes, qt.QMessageBox__No)
+		if answer != int(qt.QMessageBox__Yes) {
+			return
+		}
+		current := client
+		run(func() (func(), error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := current.DeleteBackup(ctx, id); err != nil {
+				return nil, err
+			}
+			return func() {
+				status.SetText("بکاپ حذف شد. برای تازه‌سازی فهرست، «مشاهده حساب و فهرست بکاپ‌ها» را بزنید.")
+			}, nil
 		})
 	})
 	upload.OnClicked(func() {
@@ -249,4 +352,8 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			return func() { status.SetText("لایسنس آنلاین معتبر است. وضعیت: " + l.Status) }, nil
 		})
 	})
+	if savedLicense, err := files.ReadToken(); err == nil {
+		connectWithLicense(savedLicense)
+	}
+	return connectWithLicense
 }
