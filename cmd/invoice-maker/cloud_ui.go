@@ -38,7 +38,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	password.SetEchoMode(qt.QLineEdit__Password)
 	password.SetPlaceholderText("رمز عبور حساب ابری")
 	layout.AddWidget(password.QWidget)
-	login := qt.NewQPushButton5("ورود به حساب ابری", parent)
+	login := qt.NewQPushButton5("ورود به حساب موجود (اختیاری)", parent)
 	logout := qt.NewQPushButton5("خروج از حساب ابری", parent)
 	logout.SetVisible(false)
 	upload := qt.NewQPushButton5("بکاپ‌گیری ابری از اطلاعات فعلی", parent)
@@ -49,17 +49,18 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	download := qt.NewQPushButton5("دانلود بکاپ انتخاب‌شده", parent)
 	deleteBackup := qt.NewQPushButton5("حذف بکاپ انتخاب‌شده", parent)
 	validate := qt.NewQPushButton5("بررسی آنلاین اعتبار لایسنس", parent)
-	panel := qt.NewQPushButton5("ساخت حساب و مدیریت بکاپ‌ها در پنل وب", parent)
-	panel.OnClicked(func() {
+	registerOnline := qt.NewQPushButton5("ساخت حساب فقط در وب‌سایت Hesora", parent)
+	registerOnline.SetToolTip("ساخت حساب از داخل برنامهٔ دسکتاپ انجام نمی‌شود؛ ثبت‌نام را در وب‌سایت کامل کنید.")
+	registerOnline.OnClicked(func() {
 		if _, err := cloud.New(urlInput.Text()); err != nil {
 			status.SetText(err.Error())
 			return
 		}
-		if !qt.QDesktopServices_OpenUrl(qt.NewQUrl3(strings.TrimRight(strings.TrimSpace(urlInput.Text()), "/") + "/account")) {
-			status.SetText("باز کردن مرورگر ناموفق بود؛ نشانی پنل را در مرورگر باز کنید.")
+		if !qt.QDesktopServices_OpenUrl(qt.NewQUrl3(strings.TrimRight(strings.TrimSpace(urlInput.Text()), "/") + "/register")) {
+			status.SetText("باز کردن صفحهٔ ثبت‌نام وب ناموفق بود؛ نشانی hesora.ir/register را در مرورگر باز کنید.")
 		}
 	})
-	layout.AddWidget(panel.QWidget)
+	layout.AddWidget(registerOnline.QWidget)
 	for _, b := range []*qt.QPushButton{login, logout, upload, refresh, validate} {
 		layout.AddWidget(b.QWidget)
 	}

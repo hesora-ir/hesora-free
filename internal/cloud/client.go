@@ -99,13 +99,6 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 		}
 		req.ContentLength = info.Size()
 	}
-	if file, ok := body.(*os.File); ok {
-		info, statErr := file.Stat()
-		if statErr != nil {
-			return statErr
-		}
-		req.ContentLength = info.Size()
-	}
 	req.Header.Set("X-Hesora-Client", "1")
 	req.Header.Set("Content-Type", "application/json")
 	if c.token != "" {
