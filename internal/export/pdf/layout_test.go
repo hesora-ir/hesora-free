@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func TestInvoiceLayoutFixtures(t *testing.T) {
 		Issuer:       invoicehtml.PartySnapshot{Name: "استودیو طراحی آبان", Phone: "09121234567", Email: "hello@example.com", Address: "تهران، خیابان آزادی، خیابان استاد معین، مجتمع تجاری، طبقه دوم، واحد ۱۲"},
 		Customer:     invoicehtml.PartySnapshot{Name: "شرکت توسعه پارس", Phone: "02112345678", Email: "finance@example.com", Address: "تهران، میدان ونک، خیابان ملاصدرا، پلاک ۲۴"},
 		BankAccounts: []domain.BankAccount{{BankName: "ملت", AccountHolder: "استودیو طراحی آبان", AccountNumber: "123456789012", CardNumber: "6104331234567890", IBAN: "IR120170000000123456789012"}},
-		Template:     domain.DocumentTemplate{Name: "پیش‌فرض", PageSize: "A4", Orientation: "portrait", FontFamily: "IRANSansX", FontSize: 10, PrimaryColor: "#285082", AccentColor: "#4777A8", ShowTax: true, ShowBankAccounts: true},
+		Template:     domain.DocumentTemplate{Name: "پیش‌فرض", Prefix: "FACT-", ThankYou: "از خرید شما سپاسگزاریم", ShowSeal: true, ShowSignature: true, PageSize: "A4", Orientation: "portrait", FontFamily: "IRANSansX", FontSize: 10, PrimaryColor: "#285082", AccentColor: "#4777A8", ShowTax: true, ShowBankAccounts: true},
 	}
 	var err error
 	data.Totals, err = domain.CalculateFinancials(data.Document.Items, data.Document.InvoiceDiscount, data.Document.TaxRateBPS)
@@ -73,9 +74,26 @@ func TestInvoiceLayoutFixtures(t *testing.T) {
 	if err := ExportInvoice(stress, filepath.Join(output, "invoice-multipage.pdf"), opts); err != nil {
 		t.Fatal(err)
 	}
+	pdfBytes, err := os.ReadFile(filepath.Join(output, "invoice-multipage.pdf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageCount := bytes.Count(pdfBytes, []byte("/Type /Page")) - bytes.Count(pdfBytes, []byte("/Type /Pages"))
+	if pageCount < 2 {
+		t.Fatalf("long invoice should render across multiple pages, got %d", pageCount)
+	}
 	data.Template.PageSize, data.Template.Orientation = "Letter", "landscape"
 	data.Document.Kind = "proforma"
 	if err := ExportInvoice(data, filepath.Join(output, "invoice-landscape.pdf"), opts); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPersianDateAndDigitsForPDF(t *testing.T) {
+	if got, want := jalaliDate(time.Date(2024, 3, 20, 0, 0, 0, 0, time.UTC)), "۱۴۰۳/۰۱/۰۱"; got != want {
+		t.Fatalf("Jalali PDF date=%q want=%q", got, want)
+	}
+	if got, want := faDigits("INV-2026/11/20 123,456"), "INV-۲۰۲۶/۱۱/۲۰ ۱۲۳,۴۵۶"; got != want {
+		t.Fatalf("localized PDF digits=%q want=%q", got, want)
 	}
 }

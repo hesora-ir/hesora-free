@@ -3,11 +3,14 @@ package licensing
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -48,14 +51,50 @@ func (s FileStore) ClearToken() error {
 }
 
 func (s FileStore) ReadPublicKey() (ed25519.PublicKey, error) {
+	keys, err := s.ReadPublicKeys()
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("کلید عمومی ذخیره‌شدهٔ لایسنس معتبر نیست")
+	}
+	if key, ok := keys["legacy"]; ok {
+		return key, nil
+	}
+	ids := make([]string, 0, len(keys))
+	for id := range keys {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) > 0 {
+		return keys[ids[0]], nil
+	}
+	return nil, errors.New("کلید عمومی ذخیره‌شدهٔ لایسنس معتبر نیست")
+}
+
+// ReadPublicKeys accepts the legacy raw single-key file and the versioned map
+// written by SavePublicKeys. The public key ring is not secret.
+func (s FileStore) ReadPublicKeys() (map[string]ed25519.PublicKey, error) {
 	data, err := os.ReadFile(filepath.Join(s.Directory, publicKeyFileName))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) != ed25519.PublicKeySize {
-		return nil, errors.New("کلید عمومی ذخیره‌شدهٔ لایسنس معتبر نیست")
+	if len(data) == ed25519.PublicKeySize {
+		return map[string]ed25519.PublicKey{"legacy": ed25519.PublicKey(data)}, nil
 	}
-	return ed25519.PublicKey(data), nil
+	var encoded map[string]string
+	if err := json.Unmarshal(data, &encoded); err != nil || len(encoded) == 0 || len(encoded) > 32 {
+		return nil, errors.New("حلقهٔ کلید عمومی ذخیره‌شدهٔ لایسنس معتبر نیست")
+	}
+	keys := make(map[string]ed25519.PublicKey, len(encoded))
+	for id, value := range encoded {
+		key, decodeErr := base64.RawURLEncoding.DecodeString(value)
+		if id == "" || len(id) > 128 || decodeErr != nil || len(key) != ed25519.PublicKeySize {
+			return nil, errors.New("حلقهٔ کلید عمومی ذخیره‌شدهٔ لایسنس معتبر نیست")
+		}
+		keys[id] = ed25519.PublicKey(key)
+	}
+	return keys, nil
 }
 
 func (s FileStore) SavePublicKey(key ed25519.PublicKey) error {
@@ -63,6 +102,24 @@ func (s FileStore) SavePublicKey(key ed25519.PublicKey) error {
 		return errors.New("کلید عمومی لایسنس معتبر نیست")
 	}
 	return atomicWrite(s.Directory, publicKeyFileName, key)
+}
+
+func (s FileStore) SavePublicKeys(keys map[string]ed25519.PublicKey) error {
+	if len(keys) == 0 || len(keys) > 32 {
+		return errors.New("حلقهٔ کلید عمومی لایسنس معتبر نیست")
+	}
+	encoded := make(map[string]string, len(keys))
+	for id, key := range keys {
+		if id == "" || len(id) > 128 || len(key) != ed25519.PublicKeySize {
+			return errors.New("حلقهٔ کلید عمومی لایسنس معتبر نیست")
+		}
+		encoded[id] = base64.RawURLEncoding.EncodeToString(key)
+	}
+	data, err := json.Marshal(encoded)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(s.Directory, publicKeyFileName, data)
 }
 
 // InstallationID returns a stable random local identifier. It is a privacy-friendlier

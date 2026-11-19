@@ -1,6 +1,8 @@
 package licensing
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,6 +25,33 @@ func TestFileStoreTokenRoundTripAndClear(t *testing.T) {
 	}
 	if _, err := store.ReadToken(); !os.IsNotExist(err) {
 		t.Fatalf("expected missing token, got %v", err)
+	}
+}
+
+func TestFileStorePublicKeyRingRoundTripAndLegacyRead(t *testing.T) {
+	store := FileStore{Directory: filepath.Join(t.TempDir(), "keys")}
+	oldPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]ed25519.PublicKey{"old-2026": oldPublic, "new-2026": newPublic}
+	if err = store.SavePublicKeys(keys); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ReadPublicKeys()
+	if err != nil || len(got) != 2 || !got["old-2026"].Equal(oldPublic) || !got["new-2026"].Equal(newPublic) {
+		t.Fatalf("key ring=%v err=%v", got, err)
+	}
+	if err = store.SavePublicKey(oldPublic); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.ReadPublicKeys()
+	if err != nil || len(got) != 1 || !got["legacy"].Equal(oldPublic) {
+		t.Fatalf("legacy key=%v err=%v", got, err)
 	}
 }
 

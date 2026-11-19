@@ -516,6 +516,15 @@ func buildInvoicePage(parent *qt.QWidget, contacts *application.Contacts, invoic
 		if documentKind == "proforma" {
 			prefix = "PF-"
 		}
+		if existing == nil && opts.templates != nil && opts.templates.ProEnabled() {
+			savedTemplates, templateErr := opts.templates.DocumentTemplates(ctx)
+			if templateErr != nil {
+				return doc, fmt.Errorf("خواندن پیشوند قالب فاکتور: %w", templateErr)
+			}
+			if len(savedTemplates) > 0 && strings.TrimSpace(savedTemplates[0].Prefix) != "" {
+				prefix = savedTemplates[0].Prefix
+			}
+		}
 		selectedNotes := make([]string, 0)
 		for _, check := range footnoteChecks {
 			if check.IsChecked() {

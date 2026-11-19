@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -38,16 +39,25 @@ func IsForbidden(err error) bool {
 	return errors.As(err, &e) && e.Status == http.StatusForbidden
 }
 
+func IsConflict(err error) bool {
+	var e *APIError
+	return errors.As(err, &e) && e.Status == http.StatusConflict
+}
+
 type License struct {
-	ID               string `json:"id"`
-	Token            string `json:"token"`
-	InstallationID   string `json:"installation_id"`
-	ExpiresAt        int64  `json:"expires_at"`
-	Status           string `json:"status"`
-	RemainingSeconds int64  `json:"remaining_seconds"`
+	ID               string            `json:"id"`
+	Token            string            `json:"token"`
+	InstallationID   string            `json:"installation_id"`
+	ExpiresAt        int64             `json:"expires_at"`
+	Status           string            `json:"status"`
+	RemainingSeconds int64             `json:"remaining_seconds"`
+	KeyID            string            `json:"key_id,omitempty"`
+	PublicKey        string            `json:"public_key,omitempty"`
+	PublicKeys       map[string]string `json:"public_keys,omitempty"`
 }
 type Account struct {
 	User struct {
+		ID    string `json:"id"`
 		Name  string `json:"name"`
 		Email string `json:"email"`
 	} `json:"user"`
@@ -63,13 +73,38 @@ type Backup struct {
 	Size      int64  `json:"size"`
 	CreatedAt int64  `json:"created_at"`
 }
+
+type WorkspacePaymentAllocation struct {
+	DocumentID string `json:"document_id"`
+	Number     string `json:"number,omitempty"`
+	Amount     int64  `json:"amount"`
+}
+
+type WorkspacePayment struct {
+	ID             string                       `json:"id"`
+	ExternalRef    string                       `json:"external_ref"`
+	Amount         int64                        `json:"amount"`
+	Currency       string                       `json:"currency"`
+	PaidAt         int64                        `json:"paid_at"`
+	Method         string                       `json:"method"`
+	Note           string                       `json:"note"`
+	ReversedAt     *int64                       `json:"reversed_at,omitempty"`
+	ReversalReason string                       `json:"reversal_reason,omitempty"`
+	Allocations    []WorkspacePaymentAllocation `json:"allocations"`
+}
 type Document struct {
-	ID        string          `json:"id"`
-	Kind      string          `json:"kind"`
-	Version   int64           `json:"version"`
-	UpdatedAt int64           `json:"updated_at"`
-	Deleted   bool            `json:"deleted"`
-	Data      json.RawMessage `json:"data"`
+	ID           string          `json:"id"`
+	Kind         string          `json:"kind"`
+	Version      int64           `json:"version"`
+	UpdatedAt    int64           `json:"updated_at"`
+	Deleted      bool            `json:"deleted"`
+	Data         json.RawMessage `json:"data"`
+	ChangeCursor int64           `json:"change_cursor,omitempty"`
+}
+type documentChangesPage struct {
+	Changes []Document `json:"changes"`
+	Cursor  int64      `json:"cursor"`
+	HasMore bool       `json:"has_more"`
 }
 
 func New(baseURL string) (*Client, error) {
@@ -175,20 +210,58 @@ func (c *Client) Account(ctx context.Context) (Account, error) {
 	return a, err
 }
 func (c *Client) PublicKey(ctx context.Context) (ed25519.PublicKey, error) {
+	keys, err := c.PublicKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if key, ok := keys["legacy"]; ok {
+		return key, nil
+	}
+	ids := make([]string, 0, len(keys))
+	for id := range keys {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return nil, errors.New("کلید عمومی دریافت‌شده از سرور معتبر نیست")
+	}
+	return keys[ids[0]], nil
+}
+
+func (c *Client) PublicKeys(ctx context.Context) (map[string]ed25519.PublicKey, error) {
 	var response struct {
-		PublicKey string `json:"public_key"`
+		PublicKey  string            `json:"public_key"`
+		PublicKeys map[string]string `json:"public_keys"`
 	}
 	if err := c.json(ctx, "GET", "/licenses/public-key", nil, &response); err != nil {
 		return nil, err
 	}
-	key, err := base64.RawURLEncoding.DecodeString(response.PublicKey)
-	if err != nil {
-		key, err = base64.StdEncoding.DecodeString(response.PublicKey)
+	if len(response.PublicKeys) == 0 && response.PublicKey != "" {
+		response.PublicKeys = map[string]string{"legacy": response.PublicKey}
 	}
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		return nil, errors.New("کلید عمومی دریافت‌شده از سرور معتبر نیست")
+	return DecodePublicKeys(response.PublicKeys)
+}
+
+func DecodePublicKeys(encoded map[string]string) (map[string]ed25519.PublicKey, error) {
+	decode := func(value string) ([]byte, error) {
+		key, err := base64.RawURLEncoding.DecodeString(value)
+		if err != nil {
+			key, err = base64.StdEncoding.DecodeString(value)
+		}
+		return key, err
 	}
-	return ed25519.PublicKey(key), nil
+	if len(encoded) == 0 || len(encoded) > 32 {
+		return nil, errors.New("حلقهٔ کلید عمومی دریافت‌شده از سرور معتبر نیست")
+	}
+	keys := make(map[string]ed25519.PublicKey, len(encoded))
+	for id, value := range encoded {
+		key, err := decode(value)
+		if id == "" || len(id) > 128 || err != nil || len(key) != ed25519.PublicKeySize {
+			return nil, errors.New("حلقهٔ کلید عمومی دریافت‌شده از سرور معتبر نیست")
+		}
+		keys[id] = ed25519.PublicKey(key)
+	}
+	return keys, nil
 }
 func (c *Client) ActivateLicense(ctx context.Context, code, installation string) (License, error) {
 	var license License
@@ -301,10 +374,77 @@ func (c *Client) UploadBackup(ctx context.Context, path string) (Backup, error) 
 	err = c.request(ctx, "POST", "/backups", file, map[string]string{"Content-Type": "application/octet-stream", "X-Backup-Name": filepath.Base(path), "X-Backup-SHA256": hex.EncodeToString(hash.Sum(nil))}, &b)
 	return b, err
 }
+
+func (c *Client) ImportBackupToWorkspace(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("شناسه بکاپ الزامی است")
+	}
+	return c.json(ctx, http.MethodPost, "/backups/"+url.PathEscape(id)+"/import", map[string]any{}, nil)
+}
+
+func (c *Client) ShareInvoice(ctx context.Context, data map[string]any) (string, error) {
+	var result struct {
+		URL string `json:"url"`
+	}
+	err := c.json(ctx, http.MethodPost, "/workspace/invoices/share", map[string]any{"data": data}, &result)
+	if err == nil && result.URL == "" {
+		err = errors.New("پاسخ پیوند اشتراک‌گذاری خالی است")
+	}
+	return result.URL, err
+}
+
+// SaveWorkspacePayment uses the server's stable payment ID for idempotent sync.
+func (c *Client) SaveWorkspacePayment(ctx context.Context, payment WorkspacePayment) (bool, error) {
+	var result struct {
+		Idempotent bool `json:"idempotent"`
+	}
+	err := c.json(ctx, http.MethodPost, "/workspace/payments", payment, &result)
+	return result.Idempotent, err
+}
+
+func (c *Client) WorkspacePayments(ctx context.Context) ([]WorkspacePayment, error) {
+	var result struct {
+		Payments []WorkspacePayment `json:"payments"`
+	}
+	err := c.json(ctx, http.MethodGet, "/workspace/payments", nil, &result)
+	return result.Payments, err
+}
+
+func (c *Client) ReverseWorkspacePayment(ctx context.Context, id, reason string) error {
+	if len(id) != 32 || strings.TrimSpace(reason) == "" {
+		return errors.New("invalid payment ID or reversal reason")
+	}
+	return c.json(ctx, http.MethodPost, "/workspace/payments/"+url.PathEscape(id)+"/reverse", map[string]string{"reason": reason}, nil)
+}
+
 func (c *Client) Documents(ctx context.Context) ([]Document, error) {
 	var docs []Document
 	err := c.json(ctx, "GET", "/cloud/documents", nil, &docs)
 	return docs, err
+}
+
+// DocumentsSince retrieves only documents changed after the durable server cursor.
+// The server coalesces repeated changes to the same document and retains tombstones.
+func (c *Client) DocumentsSince(ctx context.Context, after int64) ([]Document, int64, error) {
+	if after < 0 {
+		return nil, after, errors.New("invalid document change cursor")
+	}
+	all := make([]Document, 0)
+	for {
+		var page documentChangesPage
+		path := fmt.Sprintf("/cloud/document-changes?after=%d&limit=200", after)
+		if err := c.json(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return nil, after, err
+		}
+		if page.Cursor < after || (page.HasMore && page.Cursor == after) {
+			return nil, after, errors.New("invalid document change cursor response")
+		}
+		all = append(all, page.Changes...)
+		after = page.Cursor
+		if !page.HasMore {
+			return all, after, nil
+		}
+	}
 }
 
 // PutDocument uses optimistic concurrency. A stale Version returns HTTP 409;
@@ -313,4 +453,57 @@ func (c *Client) PutDocument(ctx context.Context, d Document) (Document, error) 
 	var out Document
 	err := c.json(ctx, "PUT", "/cloud/documents/"+url.PathEscape(d.ID), map[string]any{"kind": d.Kind, "version": d.Version, "deleted": d.Deleted, "data": d.Data}, &out)
 	return out, err
+}
+
+// PutDocumentDesktopWins retries one optimistic conflict against the latest
+// remote version. The UI asks the user to confirm this policy before sync.
+func (c *Client) PutDocumentDesktopWins(ctx context.Context, d Document) (Document, error) {
+	out, _, err := c.PutDocumentThreeWay(ctx, d, nil, true)
+	return out, err
+}
+
+// PutDocumentThreeWay merges non-overlapping fields against the last common
+// snapshot, then retries once at the latest remote version. preferLocal must
+// only be true after the user has accepted the desktop-wins conflict policy.
+func (c *Client) PutDocumentThreeWay(ctx context.Context, d Document, base json.RawMessage, preferLocal bool) (Document, []string, error) {
+	out, err := c.PutDocument(ctx, d)
+	if !IsConflict(err) {
+		return out, nil, err
+	}
+	latest, err := c.Document(ctx, d.ID)
+	if err != nil {
+		return Document{}, nil, err
+	}
+	conflicts := []string{}
+	if d.Deleted != latest.Deleted {
+		conflicts = []string{"$ (delete/update conflict)"}
+	} else if !d.Deleted && !latest.Deleted {
+		if len(bytes.TrimSpace(base)) == 0 {
+			// Existing installs may not yet have a common-snapshot column value.
+			// Preserve the established user-approved desktop-wins behavior until
+			// this document has completed one sync and stores a new base snapshot.
+			conflicts = []string{"$ (missing common snapshot)"}
+		} else {
+			merged, paths, mergeErr := MergeDocumentData(base, d.Data, latest.Data, preferLocal)
+			if mergeErr != nil {
+				return Document{}, nil, mergeErr
+			}
+			d.Data, conflicts = merged, paths
+		}
+	}
+	d.Version = latest.Version
+	out, err = c.PutDocument(ctx, d)
+	if err != nil {
+		return Document{}, conflicts, err
+	}
+	return out, conflicts, nil
+}
+
+func (c *Client) Document(ctx context.Context, id string) (Document, error) {
+	if id == "" || strings.ContainsAny(id, "/?#") {
+		return Document{}, errors.New("invalid document ID")
+	}
+	var doc Document
+	err := c.json(ctx, http.MethodGet, "/cloud/documents/"+url.PathEscape(id), nil, &doc)
+	return doc, err
 }

@@ -26,7 +26,7 @@ func (s *Store) Dashboard(ctx context.Context) (domain.DashboardSnapshot, error)
 		COALESCE(SUM(CASE WHEN i.total_minor+i.additional_charge_minor = COALESCE(p.paid,0) THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(i.total_minor+i.additional_charge_minor - COALESCE(p.paid,0)),0)
 		FROM invoices i LEFT JOIN (
-			SELECT invoice_id, SUM(amount_minor) AS paid FROM payment_allocations GROUP BY invoice_id
+			SELECT pa.invoice_id, SUM(pa.amount_minor) AS paid FROM payment_allocations pa LEFT JOIN cloud_payment_reversals r ON r.local_payment_id=pa.payment_id WHERE r.local_payment_id IS NULL GROUP BY pa.invoice_id
 		) p ON p.invoice_id=i.id
 		WHERE i.kind='invoice' AND i.status='issued' GROUP BY i.currency`)
 	if err != nil {
@@ -54,8 +54,9 @@ func (s *Store) Dashboard(ctx context.Context) (domain.DashboardSnapshot, error)
 		return result, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT
-		COALESCE(SUM(CASE WHEN currency='IRT' THEN amount_minor ELSE 0 END),0),
-		COALESCE(SUM(CASE WHEN currency='IRR' THEN amount_minor ELSE 0 END),0) FROM payments`).Scan(&result.Toman.Received, &result.Rial.Received); err != nil {
+		COALESCE(SUM(CASE WHEN p.currency='IRT' THEN p.amount_minor ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN p.currency='IRR' THEN p.amount_minor ELSE 0 END),0) FROM payments p
+		LEFT JOIN cloud_payment_reversals r ON r.local_payment_id=p.id WHERE r.local_payment_id IS NULL`).Scan(&result.Toman.Received, &result.Rial.Received); err != nil {
 		return result, err
 	}
 	rows, err = tx.QueryContext(ctx, `SELECT i.number, a.action, a.occurred_at

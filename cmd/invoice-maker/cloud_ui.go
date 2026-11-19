@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,9 +11,12 @@ import (
 
 	"github.com/hesora-ir/hesora-free/internal/adapters/sqlite"
 	"github.com/hesora-ir/hesora-free/internal/cloud"
+	"github.com/hesora-ir/hesora-free/internal/domain"
 	"github.com/hesora-ir/hesora-free/internal/licensing"
 	qt "github.com/mappu/miqt/qt6"
 )
+
+var activeCloudClient *cloud.Client
 
 var hesoraCloudURL = "https://hesora.ir"
 
@@ -42,11 +46,20 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	logout := qt.NewQPushButton5("خروج از حساب ابری", parent)
 	logout.SetVisible(false)
 	upload := qt.NewQPushButton5("بکاپ‌گیری ابری از اطلاعات فعلی", parent)
+	syncWorkspace := qt.NewQPushButton5("همگام‌سازی مستقیم با فضای کار وب", parent)
+	autoSync := qt.NewQCheckBox4("همگام‌سازی خودکار هر ۵ دقیقه (با تعارض، نسخهٔ دسکتاپ جایگزین نسخهٔ وب می‌شود)", parent)
+	autoSync.SetToolTip("با فعال‌سازی، اجازه می‌دهید همگام‌سازی دوره‌ای سیاست دسکتاپ‌برنده را بدون پرسش دوباره اجرا کند.")
+	if saved, err := store.GetSetting(context.Background(), "cloud.auto_sync"); err == nil && saved.Value == "true" {
+		autoSync.SetChecked(true)
+	}
+	autoSyncTimer := qt.NewQTimer2(parent.QObject)
+	autoSyncTimer.SetInterval(5 * 60 * 1000)
 	refresh := qt.NewQPushButton5("مشاهده حساب و فهرست بکاپ‌ها", parent)
 	backupID := qt.NewQLineEdit(parent)
 	backupID.SetLayoutDirection(qt.LeftToRight)
 	backupID.SetPlaceholderText("شناسه بکاپ برای دریافت (از فهرست پایین کپی کنید)")
 	download := qt.NewQPushButton5("دانلود بکاپ انتخاب‌شده", parent)
+	restoreBackup := qt.NewQPushButton5("بازیابی بکاپ در برنامه", parent)
 	deleteBackup := qt.NewQPushButton5("حذف بکاپ انتخاب‌شده", parent)
 	validate := qt.NewQPushButton5("بررسی آنلاین اعتبار لایسنس", parent)
 	registerOnline := qt.NewQPushButton5("ساخت حساب فقط در وب‌سایت Hesora", parent)
@@ -61,22 +74,25 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 		}
 	})
 	layout.AddWidget(registerOnline.QWidget)
-	for _, b := range []*qt.QPushButton{login, logout, upload, refresh, validate} {
+	for _, b := range []*qt.QPushButton{login, logout, upload, syncWorkspace, refresh, validate} {
 		layout.AddWidget(b.QWidget)
 	}
+	layout.AddWidget(autoSync.QWidget)
 	layout.AddWidget(qt.NewQLabel5("برای دریافت یک بکاپ، شناسهٔ آن را از فهرست حساب وارد کنید:", parent).QWidget)
 	layout.AddWidget(backupID.QWidget)
 	layout.AddWidget(download.QWidget)
+	layout.AddWidget(restoreBackup.QWidget)
 	layout.AddWidget(deleteBackup.QWidget)
 	layout.AddWidget(status.QWidget)
 	var client *cloud.Client
+	var startSync func(confirmDesktopWins bool)
 	type completion struct {
 		apply func()
 		err   error
 	}
 	results := make(chan completion, 1)
 	busy := false
-	buttons := []*qt.QPushButton{local, login, logout, upload, refresh, download, deleteBackup, validate}
+	buttons := []*qt.QPushButton{local, login, logout, upload, syncWorkspace, refresh, download, restoreBackup, deleteBackup, validate}
 	timer := qt.NewQTimer2(parent.QObject)
 	timer.OnTimeout(func() {
 		select {
@@ -162,12 +178,16 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			}
 			return func() {
 				client = next
+				activeCloudClient = next
 				urlInput.SetEnabled(false)
 				email.SetVisible(false)
 				password.SetVisible(false)
 				login.SetVisible(false)
 				logout.SetVisible(true)
 				status.SetText("اتصال با حساب خرید لایسنس برقرار شد.\n" + accountText(a))
+				if autoSync.IsChecked() {
+					startSync(false)
+				}
 			}, nil
 		})
 	}
@@ -190,12 +210,16 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			}
 			return func() {
 				client = next
+				activeCloudClient = next
 				urlInput.SetEnabled(false)
 				email.SetVisible(false)
 				password.SetVisible(false)
 				login.SetVisible(false)
 				logout.SetVisible(true)
 				status.SetText("اتصال برقرار شد.\n" + accountText(a))
+				if autoSync.IsChecked() {
+					startSync(false)
+				}
 			}, nil
 		})
 	})
@@ -217,6 +241,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			err := current.Logout(ctx)
 			return func() {
 				client = nil
+				activeCloudClient = nil
 				urlInput.SetEnabled(true)
 				email.SetVisible(true)
 				password.SetVisible(true)
@@ -275,6 +300,41 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			return func() { status.SetText("بکاپ دانلود و صحت checksum آن بررسی شد:\n" + path) }, nil
 		})
 	})
+	restoreBackup.OnClicked(func() {
+		if !requireClient() {
+			return
+		}
+		id := strings.TrimSpace(backupID.Text())
+		if id == "" {
+			status.SetText("ابتدا شناسهٔ بکاپ را از فهرست وارد کنید.")
+			return
+		}
+		answer := qt.QMessageBox_Question2(parent, "بازیابی فضای کاری", "تمام اطلاعات محلی با نسخهٔ انتخاب‌شده جایگزین می‌شود. نسخهٔ فعلی برای بازگشت کنار پایگاه داده نگه داشته خواهد شد. ادامه می‌دهید؟", qt.QMessageBox__Yes, qt.QMessageBox__No)
+		if answer != int(qt.QMessageBox__Yes) {
+			return
+		}
+		current := client
+		run(func() (func(), error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			dir, err := os.MkdirTemp(filepath.Dir(store.Path()), ".cloud-restore-")
+			if err != nil {
+				return nil, err
+			}
+			defer os.RemoveAll(dir)
+			path := filepath.Join(dir, "selected-backup.db")
+			if err = current.DownloadBackup(ctx, id, path); err != nil {
+				return nil, err
+			}
+			safety, err := store.RestoreFrom(ctx, path)
+			if err != nil {
+				return nil, err
+			}
+			return func() {
+				status.SetText("بازیابی کامل شد. نسخهٔ پیش از بازیابی برای بازگشت در این مسیر نگه داشته شد:\n" + safety)
+			}, nil
+		})
+	})
 	deleteBackup.OnClicked(func() {
 		if !requireClient() {
 			return
@@ -326,6 +386,182 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			}, nil
 		})
 	})
+	startSync = func(confirmDesktopWins bool) {
+		if !requireClient() {
+			return
+		}
+		if confirmDesktopWins {
+			answer := qt.QMessageBox_Question2(parent, "همگام‌سازی فضای کار", "تغییرهای مستقل وب و دسکتاپ به‌صورت فیلدی ادغام می‌شوند. اگر یک فیلد در هر دو طرف تغییر کرده باشد، مقدار دسکتاپ انتخاب می‌شود. ادامه می‌دهید؟", qt.QMessageBox__Yes, qt.QMessageBox__No)
+			if answer != int(qt.QMessageBox__Yes) {
+				return
+			}
+		}
+		current := client
+		run(func() (func(), error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			pushCursor, initialized, err := store.LocalCloudPushCursor(ctx)
+			if err != nil {
+				return nil, err
+			}
+			rollbackPath := filepath.Join(filepath.Dir(store.Path()), "hesora-sync-rollback-"+time.Now().Format("20060102-150405.000000000")+".db")
+			pushed := 0
+			fieldConflicts := 0
+			bootstrap := !initialized
+			applyCursor := pushCursor
+			if !initialized {
+				// Capture the log boundary before snapshotting so changes made while
+				// the backup is created remain pending for the next incremental push.
+				baselineCursor, cursorErr := store.LatestLocalCloudChangeID(ctx)
+				if cursorErr != nil {
+					return nil, cursorErr
+				}
+				account, accountErr := current.Account(ctx)
+				if accountErr != nil {
+					return nil, accountErr
+				}
+				if err = store.SeedDesktopCloudMappings(ctx, account.User.ID); err != nil {
+					return nil, err
+				}
+				// Seeding templates can enqueue synthetic local events. They belong
+				// after the backup boundary, but must be included in the cursor check
+				// that protects applying the initial server snapshot.
+				applyCursor, cursorErr = store.LatestLocalCloudChangeID(ctx)
+				if cursorErr != nil {
+					return nil, cursorErr
+				}
+				if err = store.BackupTo(ctx, rollbackPath); err != nil {
+					return nil, err
+				}
+				backup, uploadErr := current.UploadBackup(ctx, rollbackPath)
+				if uploadErr != nil {
+					return nil, uploadErr
+				}
+				if err = current.ImportBackupToWorkspace(ctx, backup.ID); err != nil {
+					return nil, err
+				}
+				pushCursor = baselineCursor
+			} else {
+				if err = store.BackupTo(ctx, rollbackPath); err != nil {
+					return nil, err
+				}
+				pushCursor, pushed, fieldConflicts, err = pushLocalCloudChanges(ctx, store, current, pushCursor)
+				if err != nil {
+					return nil, err
+				}
+				applyCursor = pushCursor
+			}
+			cursor, err := store.CloudDocumentCursor(ctx)
+			if err != nil {
+				return nil, err
+			}
+			docs, nextCursor, err := current.DocumentsSince(ctx, cursor)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := json.Marshal(docs)
+			if err != nil {
+				return nil, err
+			}
+			var localDocs []sqlite.CloudDocument
+			if err = json.Unmarshal(raw, &localDocs); err != nil {
+				return nil, err
+			}
+			changed, err := store.ApplyCloudDocumentsAtLocalCursor(ctx, localDocs, applyCursor)
+			if err != nil {
+				return nil, err
+			}
+			if err = store.SaveCloudDocumentCursor(ctx, nextCursor); err != nil {
+				return nil, err
+			}
+			if !initialized {
+				if err = store.SaveLocalCloudPushCursor(ctx, pushCursor); err != nil {
+					return nil, err
+				}
+			}
+			localPayments, err := store.ExportPayments(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, payment := range localPayments {
+				allocations := make([]cloud.WorkspacePaymentAllocation, 0, len(payment.Allocations))
+				for _, a := range payment.Allocations {
+					allocations = append(allocations, cloud.WorkspacePaymentAllocation{DocumentID: a.DocumentID, Number: a.Number, Amount: a.Amount})
+				}
+				_, err = current.SaveWorkspacePayment(ctx, cloud.WorkspacePayment{ID: payment.ID, ExternalRef: payment.ExternalRef, Amount: payment.Amount, Currency: payment.Currency, PaidAt: payment.PaidAt, Method: payment.Method, Note: payment.Note, Allocations: allocations})
+				if err != nil {
+					return nil, fmt.Errorf("sync payment %s: %w", payment.ExternalRef, err)
+				}
+			}
+			remotePayments, err := current.WorkspacePayments(ctx)
+			if err != nil {
+				return nil, err
+			}
+			localRemotePayments := make([]sqlite.SyncedPayment, 0, len(remotePayments))
+			for _, payment := range remotePayments {
+				allocations := make([]sqlite.SyncedPaymentAllocation, 0, len(payment.Allocations))
+				for _, a := range payment.Allocations {
+					allocations = append(allocations, sqlite.SyncedPaymentAllocation{DocumentID: a.DocumentID, Number: a.Number, Amount: a.Amount})
+				}
+				localRemotePayments = append(localRemotePayments, sqlite.SyncedPayment{ID: payment.ID, ExternalRef: payment.ExternalRef, Amount: payment.Amount, Currency: payment.Currency, PaidAt: payment.PaidAt, Method: payment.Method, Note: payment.Note, ReversedAt: payment.ReversedAt, ReversalReason: payment.ReversalReason, Allocations: allocations})
+			}
+			changedPayments, err := store.ApplyPayments(ctx, localRemotePayments)
+			if err != nil {
+				return nil, err
+			}
+			pruneSyncRollbackBackups(filepath.Dir(store.Path()), rollbackPath)
+			return func() {
+				transfer := fmt.Sprintf("%d changed local documents sent", pushed)
+				if bootstrap {
+					transfer = "initial desktop snapshot uploaded"
+				}
+				conflictSummary := ""
+				if fieldConflicts > 0 {
+					conflictSummary = fmt.Sprintf(" %d conflicts used the desktop value under your selected policy.", fieldConflicts)
+				}
+				status.SetText(fmt.Sprintf("Cloud sync complete: %s, %d web documents and %d new/reversed receipts applied.%s Local rollback backup: %s", transfer, changed, changedPayments, conflictSummary, filepath.Base(rollbackPath)))
+			}, nil
+		})
+	}
+	syncWorkspace.OnClicked(func() { startSync(true) })
+	autoSync.OnClicked(func() {
+		enabled := autoSync.IsChecked()
+		if enabled {
+			answer := qt.QMessageBox_Question2(parent, "همگام‌سازی خودکار", "هر ۵ دقیقه سندهای دسکتاپ با وب همگام می‌شوند و در تعارض، نسخهٔ دسکتاپ جایگزین نسخهٔ وب خواهد شد. این سیاست را می‌پذیرید؟", qt.QMessageBox__Yes, qt.QMessageBox__No)
+			if answer != int(qt.QMessageBox__Yes) {
+				autoSync.SetChecked(false)
+				return
+			}
+		}
+		value := "false"
+		if enabled {
+			value = "true"
+		}
+		if err := store.SetSetting(context.Background(), domain.Setting{Key: "cloud.auto_sync", Value: value}); err != nil {
+			autoSync.SetChecked(!enabled)
+			status.SetText("ذخیره تنظیم همگام‌سازی ناموفق بود: " + err.Error())
+			return
+		}
+		if enabled {
+			autoSyncTimer.Start2()
+			if client != nil {
+				startSync(false)
+			} else {
+				status.SetText("همگام‌سازی خودکار پس از ورود به حساب ابری شروع می‌شود.")
+			}
+		} else {
+			autoSyncTimer.Stop()
+			status.SetText("همگام‌سازی خودکار خاموش شد.")
+		}
+	})
+	autoSyncTimer.OnTimeout(func() {
+		if autoSync.IsChecked() && client != nil && !busy {
+			startSync(false)
+		}
+	})
+	if autoSync.IsChecked() {
+		autoSyncTimer.Start2()
+	}
 	validate.OnClicked(func() {
 		if !requireClient() {
 			return
@@ -357,4 +593,50 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 		connectWithLicense(savedLicense)
 	}
 	return connectWithLicense
+}
+
+func pushLocalCloudChanges(ctx context.Context, store *sqlite.Store, current *cloud.Client, after int64) (int64, int, int, error) {
+	cursor := after
+	pushed := 0
+	conflictCount := 0
+	for {
+		pending, nextCursor, more, err := store.PendingLocalCloudChanges(ctx, cursor, 200)
+		if err != nil {
+			return cursor, pushed, conflictCount, err
+		}
+		for _, localDoc := range pending {
+			remote, conflicts, err := current.PutDocumentThreeWay(ctx, cloud.Document{ID: localDoc.ID, Kind: localDoc.Kind, Version: localDoc.Version, Deleted: localDoc.Deleted, Data: localDoc.Data}, localDoc.BaseData, true)
+			if err != nil {
+				return cursor, pushed, conflictCount, fmt.Errorf("sync local %s %d: %w", localDoc.Kind, localDoc.LocalID, err)
+			}
+			conflictCount += len(conflicts)
+			localDoc.Data = remote.Data
+			if err = store.AcknowledgeLocalCloudDocument(ctx, localDoc, remote.Version); err != nil {
+				return cursor, pushed, conflictCount, err
+			}
+			if err = store.SaveLocalCloudPushCursor(ctx, localDoc.ChangeCursor); err != nil {
+				return cursor, pushed, conflictCount, err
+			}
+			pushed++
+		}
+		if err = store.SaveLocalCloudPushCursor(ctx, nextCursor); err != nil {
+			return cursor, pushed, conflictCount, err
+		}
+		cursor = nextCursor
+		if !more {
+			return cursor, pushed, conflictCount, nil
+		}
+	}
+}
+
+func pruneSyncRollbackBackups(dir, keep string) {
+	paths, err := filepath.Glob(filepath.Join(dir, "hesora-sync-rollback-*.db"))
+	if err != nil {
+		return
+	}
+	for _, path := range paths {
+		if path != keep {
+			_ = os.Remove(path)
+		}
+	}
 }

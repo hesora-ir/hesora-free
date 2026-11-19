@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hesora-ir/hesora-free/internal/application"
 	"github.com/hesora-ir/hesora-free/internal/domain"
@@ -30,6 +31,7 @@ func showIssuedInvoiceActions(parent *qt.QWidget, invoice domain.InvoiceDocument
 	hint.SetWordWrap(true)
 	layout.AddWidget(hint.QWidget)
 	row := qt.NewQHBoxLayout2()
+	printButton := qt.NewQPushButton5("چاپ", container)
 	preview := qt.NewQPushButton5("پیش‌نمایش فاکتور", container)
 	share := qt.NewQPushButton5("اشتراک فاکتور", container)
 	pdf := qt.NewQPushButton5("خروجی PDF", container)
@@ -38,11 +40,24 @@ func showIssuedInvoiceActions(parent *qt.QWidget, invoice domain.InvoiceDocument
 	setInvoiceObjectName(preview, "secondaryAction")
 	setInvoiceObjectName(share, "primaryAction")
 	row.AddWidget(preview.QWidget)
+	row.AddWidget(printButton.QWidget)
 	row.AddWidget(share.QWidget)
 	row.AddWidget(pdf.QWidget)
 	row.AddWidget(excel.QWidget)
 	layout.AddLayout(row.QLayout)
 	layout.AddWidget(back.QWidget)
+	printButton.OnClicked(func() {
+		path, err := cachedInvoicePDF(ctx, invoice.ID, contacts, invoices, templates)
+		if err != nil {
+			qt.QMessageBox_Critical(window.QWidget, "فایل چاپ آماده نشد", err.Error())
+			return
+		}
+		if !openPDFForPrinting(path) {
+			qt.QMessageBox_Critical(window.QWidget, "بازکردن فایل ناموفق بود", "فایل PDF آماده شد، اما نمایشگر پیش‌فرض پیدا نشد.")
+			return
+		}
+		qt.QMessageBox_Information(window.QWidget, "فاکتور برای چاپ آماده شد", "فاکتور در نمایشگر PDF باز شد. از دکمهٔ چاپ همان برنامه استفاده کنید.")
+	})
 	preview.OnClicked(func() {
 		path, err := cachedInvoicePDF(ctx, invoice.ID, contacts, invoices, templates)
 		if err != nil {
@@ -93,6 +108,18 @@ func showIssuedInvoiceActions(parent *qt.QWidget, invoice domain.InvoiceDocument
 	window.SetCentralWidget(container)
 	window.Show()
 	_ = parent
+}
+
+func openPDFForPrinting(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	p := filepath.ToSlash(abs)
+	if len(p) >= 2 && p[1] == ':' {
+		p = "/" + p
+	}
+	return qt.QDesktopServices_OpenUrl(qt.NewQUrl3((&url.URL{Scheme: "file", Path: p}).String()))
 }
 
 func cachedInvoicePDF(ctx context.Context, invoiceID int64, contacts *application.Contacts, invoices *application.Invoices, templates *application.Templates) (string, error) {
@@ -161,6 +188,24 @@ func showInvoiceShareOptions(parent *qt.QWidget, invoice domain.InvoiceDocument,
 	status := qt.NewQLabel5("", container)
 	status.SetWordWrap(true)
 	layout.AddWidget(status.QWidget)
+	webShare := qt.NewQPushButton5("ساخت لینک قابل مشاهده در وب", container)
+	setInvoiceObjectName(webShare, "primaryAction")
+	webShare.OnClicked(func() {
+		if activeCloudClient == nil {
+			status.SetText("ابتدا از بخش فضای ابری وارد حساب وب شوید، سپس دوباره لینک بسازید.")
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		link, err := activeCloudClient.ShareInvoice(ctx, invoiceSharePayload(invoice))
+		if err != nil {
+			status.SetText("ساخت لینک ناموفق بود: " + err.Error())
+			return
+		}
+		qt.QGuiApplication_Clipboard().SetText(link)
+		status.SetText("پیوند عمومی ساخته و در کلیپ‌بورد کپی شد:\n" + link)
+	})
+	layout.AddWidget(webShare.QWidget)
 	platforms := []struct{ label, key string }{{"WhatsApp", "whatsapp"}, {"بله", "bale"}, {"تلگرام", "telegram"}, {"روبیکا", "rubika"}}
 	for _, platform := range platforms {
 		item := platform
@@ -208,6 +253,27 @@ func showInvoiceShareOptions(parent *qt.QWidget, invoice domain.InvoiceDocument,
 	window.SetCentralWidget(container)
 	window.Show()
 	_ = parent
+}
+
+func invoiceSharePayload(invoice domain.InvoiceDocument) map[string]any {
+	items := make([]map[string]any, 0, len(invoice.Items))
+	for _, item := range invoice.Items {
+		items = append(items, map[string]any{"ID": item.ID, "Description": item.Description, "Unit": item.Unit, "Quantity": item.Quantity, "UnitPrice": int64(item.UnitPrice), "Discount": int64(item.Discount)})
+	}
+	charges := make([]map[string]any, 0, len(invoice.AdditionalCharges))
+	for _, charge := range invoice.AdditionalCharges {
+		charges = append(charges, map[string]any{"Description": charge.Description, "Amount": int64(charge.Amount)})
+	}
+	return map[string]any{
+		"ID": invoice.ID, "Number": invoice.Number, "Kind": invoice.Kind, "DocumentType": invoice.DocumentType,
+		"Status": string(invoice.Status), "Currency": string(invoice.Currency), "CustomerID": invoice.CustomerID,
+		"IssuerProfileID": invoice.IssuerProfileID, "CustomerSnapshot": invoice.CustomerSnapshot,
+		"IssuerSnapshot": invoice.IssuerSnapshot, "IssueDate": invoice.IssueDate.Format("2006-01-02"),
+		"DueDate": invoice.DueDate.Format("2006-01-02"), "Note": invoice.Note,
+		"BankAccountsSnapshot": invoice.BankAccountsSnapshot, "Items": items, "AdditionalCharges": charges,
+		"InvoiceDiscount": map[string]any{"Mode": string(invoice.InvoiceDiscount.Mode), "Value": int64(invoice.InvoiceDiscount.Value)},
+		"TaxRateBPS":      invoice.TaxRateBPS, "Numbering": map[string]any{"Series": invoice.Numbering.Series},
+	}
 }
 
 func openShareTarget(platform, phone, invoiceNumber string) bool {

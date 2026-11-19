@@ -4,15 +4,25 @@ package licensing
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
 
 const ProductID = "hesora"
 const maxTokenLength = 64 * 1024
+
+// KeyID is the stable 16-hex-character identifier shared by the web signer
+// and desktop verifier for an Ed25519 public key.
+func KeyID(publicKey ed25519.PublicKey) string {
+	sum := sha256.Sum256(publicKey)
+	return hex.EncodeToString(sum[:8])
+}
 
 var (
 	ErrMalformedLicense     = errors.New("ساختار لایسنس نامعتبر است")
@@ -26,6 +36,7 @@ var (
 
 type Claims struct {
 	LicenseID      string   `json:"license_id"`
+	KeyID          string   `json:"key_id,omitempty"`
 	Product        string   `json:"product"`
 	Subject        string   `json:"subject"`
 	IssuedAt       int64    `json:"issued_at"`
@@ -52,6 +63,7 @@ type Result struct {
 
 type Verifier struct {
 	PublicKey      ed25519.PublicKey
+	PublicKeys     map[string]ed25519.PublicKey
 	Now            func() time.Time
 	InstallationID string
 	FreeFeatures   []string
@@ -71,7 +83,7 @@ func (v Verifier) Verify(token string) Result {
 		return result
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) != 2 || len(v.PublicKey) != ed25519.PublicKeySize {
+	if len(parts) != 2 {
 		result.Reason = ErrMalformedLicense
 		return result
 	}
@@ -81,13 +93,54 @@ func (v Verifier) Verify(token string) Result {
 		return result
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || !ed25519.Verify(v.PublicKey, payload, signature) {
-		result.Reason = ErrInvalidSignature
-		return result
-	}
 	var claims Claims
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		result.Reason = ErrMalformedLicense
+		return result
+	}
+	keys := []ed25519.PublicKey{}
+	if claims.KeyID != "" {
+		if len(claims.KeyID) > 128 {
+			result.Reason = ErrInvalidClaims
+			return result
+		}
+		if key := v.PublicKeys[claims.KeyID]; len(key) == ed25519.PublicKeySize {
+			keys = append(keys, key)
+		}
+		// Older builds only carry one pinned key and can still activate before
+		// downloading the key ring. Never use this fallback when a ring exists.
+		if len(keys) == 0 && len(v.PublicKeys) == 0 && len(v.PublicKey) == ed25519.PublicKeySize {
+			keys = append(keys, v.PublicKey)
+		}
+		if len(keys) == 0 && len(v.PublicKeys) == 1 {
+			if key := v.PublicKeys["legacy"]; len(key) == ed25519.PublicKeySize {
+				keys = append(keys, key)
+			}
+		}
+	} else {
+		if len(v.PublicKey) == ed25519.PublicKeySize {
+			keys = append(keys, v.PublicKey)
+		}
+		ids := make([]string, 0, len(v.PublicKeys))
+		for id := range v.PublicKeys {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if len(v.PublicKeys[id]) == ed25519.PublicKeySize {
+				keys = append(keys, v.PublicKeys[id])
+			}
+		}
+	}
+	verified := false
+	for _, key := range keys {
+		if ed25519.Verify(key, payload, signature) {
+			verified = true
+			break
+		}
+	}
+	if err != nil || !verified {
+		result.Reason = ErrInvalidSignature
 		return result
 	}
 	if strings.TrimSpace(claims.LicenseID) == "" || len(claims.LicenseID) > 200 ||

@@ -20,6 +20,19 @@ type PaymentAllocation struct {
 	Amount    Money
 }
 
+type PaymentHistoryAllocation struct {
+	InvoiceID     int64
+	InvoiceNumber string
+	Amount        Money
+}
+
+type PaymentHistoryEntry struct {
+	Payment        Payment
+	Allocations    []PaymentHistoryAllocation
+	ReversedAt     time.Time
+	ReversalReason string
+}
+
 func (p Payment) Validate() error {
 	if p.ID < 0 {
 		return errors.New("شناسه پرداخت نامعتبر است")

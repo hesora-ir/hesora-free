@@ -62,16 +62,21 @@ func main() {
 	templates := application.NewTemplates(store)
 	licenseFiles := licensing.FileStore{Directory: filepath.Dir(store.Path())}
 	installationID, installationErr := licenseFiles.InstallationID()
+	licensePublicKeys := make(map[string]ed25519.PublicKey)
 	licensePublicKey, _ := base64.RawURLEncoding.DecodeString(hesoraLicensePublicKeyBase64)
 	if len(licensePublicKey) != ed25519.PublicKeySize {
 		licensePublicKey, _ = base64.StdEncoding.DecodeString(hesoraLicensePublicKeyBase64)
 	}
-	if len(licensePublicKey) != ed25519.PublicKeySize {
-		if savedKey, err := licenseFiles.ReadPublicKey(); err == nil {
-			licensePublicKey = savedKey
+	if len(licensePublicKey) == ed25519.PublicKeySize {
+		pinned := ed25519.PublicKey(licensePublicKey)
+		licensePublicKeys[licensing.KeyID(pinned)] = pinned
+	}
+	if savedKeys, err := licenseFiles.ReadPublicKeys(); err == nil {
+		for id, key := range savedKeys {
+			licensePublicKeys[id] = key
 		}
 	}
-	verifier := licensing.Verifier{PublicKey: ed25519.PublicKey(licensePublicKey), InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures()}
+	verifier := licensing.Verifier{PublicKeys: licensePublicKeys, InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures()}
 	licenseToken, _ := licenseFiles.ReadToken()
 	licenseResult := verifier.Verify(licenseToken)
 	store.SetProEnabled(licenseResult.HasFeature(licensing.ProFullFeature))
@@ -100,12 +105,14 @@ func main() {
 
 	// Base information: issuer profiles.
 	issuerPage := buildIssuerPage(tabs.QWidget, contacts, ctx)
+	expensesPage := buildExpensesPage(tabs.QWidget, store, ctx)
 
 	// Settings: persisted preferences, licensing, and the free/pro comparison.
 	settingsPage := newPage(tabs.QWidget, "تنظیمات", "ظاهر برنامه، پیش‌فرض‌ها و وضعیت مجوز")
 	settingsScroll := qt.NewQScrollArea(tabs.QWidget)
 	settingsScroll.SetWidgetResizable(true)
 	settingsScroll.SetWidget(settingsPage.widget)
+	templatePage := buildTemplatePage(tabs.QWidget, templates, ctx)
 
 	settingsPage.layout.AddWidget(sectionHeading(settingsPage.widget, "ظاهر برنامه"))
 	fontSetting := qt.NewQComboBox(settingsPage.widget)
@@ -158,7 +165,7 @@ func main() {
 	settingsPage.layout.AddWidget(licenseDescription.QWidget)
 	licenseBuildStatus := qt.NewQLabel5("", settingsPage.widget)
 	licenseBuildStatus.SetWordWrap(true)
-	if len(licensePublicKey) != ed25519.PublicKeySize {
+	if len(licensePublicKeys) == 0 {
 		licenseBuildStatus.SetText("کلید عمومی هنگام فعال‌سازی به‌صورت امن از سرور Hesora دریافت و برای بررسی آفلاین ذخیره می‌شود.")
 	} else {
 		licenseBuildStatus.SetText("کلید عمومی سرور برای بررسی لایسنس در این نصب ذخیره شده است.")
@@ -323,7 +330,7 @@ func main() {
 		}
 	}
 	type activationResult struct {
-		key     ed25519.PublicKey
+		keys    map[string]ed25519.PublicKey
 		license cloud.License
 		err     error
 	}
@@ -338,7 +345,7 @@ func main() {
 				licenseActivationStatus.SetText("فعال‌سازی انجام نشد: " + result.err.Error())
 				return
 			}
-			newVerifier := licensing.Verifier{PublicKey: result.key, InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures()}
+			newVerifier := licensing.Verifier{PublicKeys: result.keys, InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures()}
 			verified := newVerifier.Verify(result.license.Token)
 			if !verified.HasFeature(licensing.ProFullFeature) {
 				if verified.Reason != nil {
@@ -348,7 +355,7 @@ func main() {
 				}
 				return
 			}
-			if err := licenseFiles.SavePublicKey(result.key); err != nil {
+			if err := licenseFiles.SavePublicKeys(result.keys); err != nil {
 				licenseActivationStatus.SetText("ذخیرهٔ کلید عمومی ناموفق بود: " + err.Error())
 				return
 			}
@@ -356,7 +363,7 @@ func main() {
 				licenseActivationStatus.SetText("ذخیرهٔ لایسنس ناموفق بود: " + err.Error())
 				return
 			}
-			licensePublicKey = result.key
+			licensePublicKeys = result.keys
 			verifier = newVerifier
 			licenseTokenInput.SetText("")
 			store.SetProEnabled(true)
@@ -393,13 +400,18 @@ func main() {
 				activationResults <- activationResult{err: err}
 				return
 			}
-			key, err := client.PublicKey(ctx)
+			license, err := client.ActivateLicense(ctx, code, installationID)
 			if err != nil {
 				activationResults <- activationResult{err: err}
 				return
 			}
-			license, err := client.ActivateLicense(ctx, code, installationID)
-			activationResults <- activationResult{key: key, license: license, err: err}
+			keys, err := cloud.DecodePublicKeys(license.PublicKeys)
+			if err != nil {
+				// Older servers return only a token. Fetch their pinned verifier key
+				// after activation so the key response is as fresh as possible.
+				keys, err = client.PublicKeys(ctx)
+			}
+			activationResults <- activationResult{keys: keys, license: license, err: err}
 		}()
 	})
 
@@ -439,7 +451,9 @@ func main() {
 	tabs.AddTab(invoicesPage.widget, "فاکتورها")
 	tabs.AddTab(customerPage.widget, "مشتریان")
 	tabs.AddTab(issuerPage.widget, "فروشگاه")
+	tabs.AddTab(expensesPage.widget, "هزینه‌ها")
 	tabs.AddTab(settingsScroll.QWidget, "تنظیمات")
+	tabs.AddTab(templatePage.widget, "قالب چاپ")
 	tabs.OnCurrentChanged(func(index int) {
 		if index == 0 {
 			refreshDashboard()
@@ -479,7 +493,7 @@ func main() {
 		title string
 		icon  string
 		index int
-	}{{"نمای کلی", "⌂", 0}, {"صدور فاکتور", "+", 1}, {"فاکتورها و قالب‌ها", "▤", 2}, {"مشتریان", "♙", 3}, {"فروشگاه و اطلاعات بانکی", "⌂", 4}, {"تنظیمات و لایسنس", "⚙", 5}}
+	}{{"نمای کلی", "⌂", 0}, {"صدور فاکتور", "+", 1}, {"فاکتورها و قالب‌ها", "▤", 2}, {"مشتریان", "♙", 3}, {"فروشگاه و اطلاعات بانکی", "⌂", 4}, {"هزینه‌ها", "−", 5}, {"تنظیمات و لایسنس", "⚙", 6}, {"قالب چاپ", "▧", 7}}
 	navButtons := make([]*qt.QPushButton, 0, len(navItems))
 	for _, item := range navItems {
 		button := qt.NewQPushButton5(item.icon+"   "+item.title, sidebar)
@@ -526,8 +540,12 @@ func main() {
 			tabs.SetCurrentIndex(3)
 		case strings.Contains(query, "فروشگاه"), strings.Contains(query, "بانک"):
 			tabs.SetCurrentIndex(4)
-		case strings.Contains(query, "تنظیم"), strings.Contains(query, "لایسنس"):
+		case strings.Contains(query, "هزینه"):
 			tabs.SetCurrentIndex(5)
+		case strings.Contains(query, "تنظیم"), strings.Contains(query, "لایسنس"):
+			tabs.SetCurrentIndex(6)
+		case strings.Contains(query, "قالب"), strings.Contains(query, "چاپ"):
+			tabs.SetCurrentIndex(7)
 		case strings.Contains(query, "صدور"), strings.Contains(query, "جدید"):
 			tabs.SetCurrentIndex(1)
 		default:

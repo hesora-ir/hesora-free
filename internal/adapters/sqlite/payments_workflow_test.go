@@ -80,3 +80,45 @@ func TestRegisterPaymentRejectsCurrencyMismatchAndUnissuedInvoice(t *testing.T) 
 		t.Fatal("expected currency mismatch to fail")
 	}
 }
+
+func TestRegisterPaymentCanAllocateOneReceiptAcrossInvoices(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "shared-payment.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	first, _, err := store.CreateInvoiceDraft(ctx, testInvoiceDraft())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDoc := testInvoiceDraft()
+	secondDoc.Number = "FACT-SHARED-2"
+	second, _, err := store.CreateInvoiceDraft(ctx, secondDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{first, second} {
+		if err := store.IssueInvoice(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payment := domain.Payment{ExternalRef: "shared-receipt", Amount: domain.Money(1000), Currency: domain.CurrencyToman, PaidAt: time.Now().UTC(), Method: "bank"}
+	paymentID, err := store.RegisterPayment(ctx, payment, []domain.PaymentAllocation{{InvoiceID: first, Amount: domain.Money(400)}, {InvoiceID: second, Amount: domain.Money(600)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.ListPaymentHistory(ctx)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("payment history length=%d err=%v", len(history), err)
+	}
+	if history[0].Payment.ID != paymentID || len(history[0].Allocations) != 2 || history[0].Allocations[0].InvoiceNumber == "" {
+		t.Fatalf("incomplete payment history: %#v", history[0])
+	}
+	for id, want := range map[int64]domain.Money{first: domain.Money(600), second: domain.Money(400)} {
+		got, err := store.InvoiceBalance(ctx, id)
+		if err != nil || got != want {
+			t.Fatalf("invoice %d balance=%d, want %d (err=%v)", id, got, want, err)
+		}
+	}
+}

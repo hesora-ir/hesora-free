@@ -47,6 +47,29 @@ func TestVerifySignedLicenseAndFeatures(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsRotatedKeyByIDAndLegacyKey(t *testing.T) {
+	oldPub, _, v := setup(t)
+	newPub, newPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.PublicKeys = map[string]ed25519.PublicKey{"old-2026": oldPub, "new-2026": newPub}
+	c := validClaims()
+	c.KeyID = "new-2026"
+	if got := v.Verify(signClaimsForTest(t, c, newPriv)); got.Status != StatusLicensed {
+		t.Fatalf("new key rejected: %+v", got)
+	}
+	_, oldPriv, oldVerifier := setup(t)
+	oldVerifier.PublicKeys = v.PublicKeys
+	if got := oldVerifier.Verify(signClaimsForTest(t, validClaims(), oldPriv)); got.Status != StatusLicensed {
+		t.Fatalf("legacy token rejected after rotation: %+v", got)
+	}
+	c.KeyID = "retired-unknown"
+	if got := v.Verify(signClaimsForTest(t, c, newPriv)); !errors.Is(got.Reason, ErrInvalidSignature) {
+		t.Fatalf("unknown key ID accepted: %+v", got)
+	}
+}
+
 func TestVerifyRejectsTampering(t *testing.T) {
 	_, priv, v := setup(t)
 	parts := strings.Split(signClaimsForTest(t, validClaims(), priv), ".")

@@ -192,13 +192,13 @@ func (s *Store) ListCustomers(ctx context.Context, query string) ([]domain.Custo
 	query = strings.TrimSpace(query)
 	rows, err := s.db.QueryContext(ctx, "SELECT c.id,c.customer_type,c.name,c.first_name,c.last_name,c.legal_name,c.tax_id,c.phone,c.email,c.address,c.created_at,c.updated_at,"+
 		"(SELECT COUNT(*) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued'),"+
-		"(SELECT COUNT(*) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id),0)<i.total_minor+i.additional_charge_minor),"+
-		"(SELECT COUNT(*) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id),0)>=i.total_minor+i.additional_charge_minor),"+
+		"(SELECT COUNT(*) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)),0)<i.total_minor+i.additional_charge_minor),"+
+		"(SELECT COUNT(*) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)),0)>=i.total_minor+i.additional_charge_minor),"+
 		"(SELECT COUNT(*) FROM invoices i WHERE i.customer_id=c.id AND i.kind='proforma' AND i.status<>'void'),"+
 		"(SELECT COALESCE(SUM(i.total_minor+i.additional_charge_minor),0) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND i.currency='IRR'),"+
 		"(SELECT COALESCE(SUM(i.total_minor+i.additional_charge_minor),0) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND i.currency='IRT'),"+
-		"(SELECT COALESCE(SUM(MAX(i.total_minor+i.additional_charge_minor-COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id),0),0)),0) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND i.currency='IRR'),"+
-		"(SELECT COALESCE(SUM(MAX(i.total_minor+i.additional_charge_minor-COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id),0),0)),0) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND i.currency='IRT')"+
+		"(SELECT COALESCE(SUM(MAX(i.total_minor+i.additional_charge_minor-COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)),0),0)),0) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND i.currency='IRR'),"+
+		"(SELECT COALESCE(SUM(MAX(i.total_minor+i.additional_charge_minor-COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)),0),0)),0) FROM invoices i WHERE i.customer_id=c.id AND i.kind='invoice' AND i.status='issued' AND i.currency='IRT')"+
 		" FROM customers c WHERE ?='' OR c.name LIKE '%'||?||'%' OR c.phone LIKE '%'||?||'%' OR c.email LIKE '%'||?||'%' OR c.tax_id LIKE '%'||?||'%' OR EXISTS(SELECT 1 FROM customer_phones cp WHERE cp.customer_id=c.id AND cp.phone LIKE '%'||?||'%') ORDER BY c.name COLLATE NOCASE,c.id DESC LIMIT 500",
 		query, query, query, query, query, query)
 	if err != nil {
@@ -293,7 +293,7 @@ func (s *Store) CustomerInvoices(ctx context.Context, customerID int64) ([]domai
 	if customerID <= 0 {
 		return nil, errors.New("شناسه مشتری نامعتبر است")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT i.id,i.number,i.kind,i.status,i.currency,i.issue_date,i.total_minor+i.additional_charge_minor,COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id),0) FROM invoices i WHERE i.customer_id=? AND i.status<>'void' AND i.kind IN ('invoice','proforma') ORDER BY CASE i.kind WHEN 'proforma' THEN 0 ELSE 1 END,i.issue_date DESC,i.id DESC", customerID)
+	rows, err := s.db.QueryContext(ctx, "SELECT i.id,i.number,i.kind,i.status,i.currency,i.issue_date,i.total_minor+i.additional_charge_minor,COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)),0) FROM invoices i WHERE i.customer_id=? AND i.status<>'void' AND i.kind IN ('invoice','proforma') ORDER BY CASE i.kind WHEN 'proforma' THEN 0 ELSE 1 END,i.issue_date DESC,i.id DESC", customerID)
 	if err != nil {
 		return nil, fmt.Errorf("خواندن فاکتورهای مشتری: %w", err)
 	}

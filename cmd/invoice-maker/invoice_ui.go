@@ -51,10 +51,13 @@ QPushButton#secondaryAction { background: #edf3fb; color: #23456f; border: 1px s
 	search := qt.NewQLineEdit(p.widget)
 	search.SetPlaceholderText("جست‌وجو بر اساس شماره فاکتور یا نام مشتری")
 	refreshButton := qt.NewQPushButton5("به‌روزرسانی", p.widget)
+	paymentHistoryButton := qt.NewQPushButton5("دفتر دریافت‌ها", p.widget)
 	searchRow := qt.NewQHBoxLayout2()
 	searchRow.AddWidget(search.QWidget)
 	searchRow.AddWidget(refreshButton.QWidget)
+	searchRow.AddWidget(paymentHistoryButton.QWidget)
 	p.layout.AddLayout(searchRow.QLayout)
+	paymentHistoryButton.OnClicked(func() { showInvoicePaymentHistoryWindow(parent, invoices, ctx) })
 
 	exportHint := qt.NewQLabel5("خروجی هر سند از کارت همان سند در دسترس خواهد بود.", p.widget)
 	exportHint.SetWordWrap(true)
@@ -267,6 +270,21 @@ QPushButton#secondaryAction { background: #edf3fb; color: #23456f; border: 1px s
 					qt.QMessageBox_Information(parent, "خروجی آماده شد", "فایل Excel ذخیره شد:\n"+path)
 				})
 				actions.AddWidget(pdfButton.QWidget)
+				printButton := qt.NewQPushButton5("چاپ", card)
+				setInvoiceObjectName(printButton, "secondaryAction")
+				printButton.SetToolTip("بازکردن نسخهٔ آمادهٔ چاپ فاکتور")
+				printButton.OnClicked(func() {
+					path, err := cachedInvoicePDF(ctx, record.ID, contacts, invoices, templates)
+					if err != nil {
+						qt.QMessageBox_Critical(parent, "آماده‌سازی چاپ ناموفق بود", err.Error())
+						return
+					}
+					if !openPDFForPrinting(path) {
+						qt.QMessageBox_Critical(parent, "بازکردن PDF ناموفق بود", "فایل آماده شد، اما نمایشگر PDF باز نشد.")
+						return
+					}
+				})
+				actions.AddWidget(printButton.QWidget)
 				actions.AddWidget(excelButton.QWidget)
 				cardLayout.AddLayout(actions.QLayout)
 				view.layout.AddWidget(card)
@@ -445,8 +463,8 @@ func resolvePDFFont(directory string, names ...string) (string, string, error) {
 
 func showInvoicePaymentWindow(parent *qt.QWidget, item domain.InvoiceListItem, invoices *application.Invoices, ctx context.Context, onSaved func()) {
 	window := qt.NewQMainWindow2()
-	window.QWidget.SetWindowTitle("ثبت پرداخت — " + item.Number)
-	window.QWidget.SetMinimumSize2(520, 380)
+	window.QWidget.SetWindowTitle("ثبت دریافت — تخصیص به فاکتورها")
+	window.QWidget.SetMinimumSize2(720, 620)
 	container := qt.NewQWidget(window.QWidget)
 	layout := qt.NewQVBoxLayout2()
 	layout.SetContentsMargins(20, 18, 20, 18)
@@ -455,23 +473,55 @@ func showInvoicePaymentWindow(parent *qt.QWidget, item domain.InvoiceListItem, i
 	if item.Currency == "IRR" {
 		currency = domain.CurrencyRial
 	}
-	title := qt.NewQLabel5(fmt.Sprintf("پرداخت برای فاکتور %s", item.Number), container)
+	title := qt.NewQLabel5("ثبت دریافت و تخصیص به فاکتورهای هم‌واحد", container)
 	title.SetStyleSheet("font-size:15pt;font-weight:700;color:#102a56;")
 	layout.AddWidget(title.QWidget)
-	balance, err := invoices.Balance(ctx, item.ID)
-	if err != nil {
-		layout.AddWidget(qt.NewQLabel5("خواندن مانده فاکتور ناموفق بود: "+err.Error(), container).QWidget)
+	layout.AddWidget(qt.NewQLabel5("برای هر فاکتور مبلغ تخصیص را وارد کنید؛ صفر یعنی بدون تخصیص. جمع مبالغ باید با مبلغ دریافت برابر باشد.", container).QWidget)
+	list, listErr := invoices.List(ctx, "")
+	if listErr != nil {
+		layout.AddWidget(qt.NewQLabel5("خواندن فهرست فاکتورها ناموفق بود: "+listErr.Error(), container).QWidget)
+		window.SetCentralWidget(container)
+		window.Show()
+		return
 	}
-	balanceLabel := qt.NewQLabel5("مانده فعلی: "+formatCustomerMoney(int64(balance))+" "+string(currency), container)
-	layout.AddWidget(balanceLabel.QWidget)
-	amount := qt.NewQLineEdit(container)
-	amount.SetPlaceholderText("مبلغ پرداخت")
-	layout.AddWidget(amount.QWidget)
+	scroll := qt.NewQScrollArea(container)
+	scroll.SetWidgetResizable(true)
+	rows := qt.NewQWidget(scroll.QWidget)
+	rowsLayout := qt.NewQVBoxLayout2()
+	rows.SetLayout(rowsLayout.QLayout)
+	type allocationInput struct {
+		invoice domain.InvoiceListItem
+		amount  *qt.QLineEdit
+	}
+	inputs := make([]allocationInput, 0, len(list))
+	for _, candidate := range list {
+		if candidate.Kind != "invoice" || candidate.Status != "issued" || candidate.Balance <= 0 || candidate.Currency != item.Currency {
+			continue
+		}
+		row := qt.NewQWidget(rows)
+		rowLayout := qt.NewQHBoxLayout2()
+		rowLayout.SetContentsMargins(6, 4, 6, 4)
+		row.SetLayout(rowLayout.QLayout)
+		label := qt.NewQLabel5(fmt.Sprintf("%s · %s · مانده %s %s", candidate.Number, candidate.Customer, formatCustomerMoney(candidate.Balance), string(currency)), row)
+		label.SetWordWrap(true)
+		rowLayout.AddWidget(label.QWidget)
+		field := qt.NewQLineEdit(row)
+		field.SetPlaceholderText("مبلغ تخصیص (۰ یعنی هیچ)")
+		field.SetMaximumWidth(190)
+		rowLayout.AddWidget(field.QWidget)
+		rowsLayout.AddWidget(row)
+		inputs = append(inputs, allocationInput{invoice: candidate, amount: field})
+	}
+	if len(inputs) == 0 {
+		rowsLayout.AddWidget(qt.NewQLabel5("فاکتور منتشرشدهٔ دارای مانده در این واحد پول وجود ندارد.", rows).QWidget)
+	}
+	scroll.SetWidget(rows)
+	layout.AddWidget(scroll.QWidget)
 	reference := qt.NewQLineEdit(container)
 	reference.SetPlaceholderText("شناسه پیگیری (اختیاری؛ برای جلوگیری از ثبت تکراری)")
 	layout.AddWidget(reference.QWidget)
 	method := qt.NewQLineEdit(container)
-	method.SetPlaceholderText("روش پرداخت (نقدی، کارت‌به‌کارت و...)")
+	method.SetPlaceholderText("روش پرداخت، مانند کارت‌به‌کارت یا نقدی")
 	layout.AddWidget(method.QWidget)
 	note := qt.NewQLineEdit(container)
 	note.SetPlaceholderText("توضیحات (اختیاری)")
@@ -479,21 +529,44 @@ func showInvoicePaymentWindow(parent *qt.QWidget, item domain.InvoiceListItem, i
 	status := qt.NewQLabel5("", container)
 	status.SetWordWrap(true)
 	layout.AddWidget(status.QWidget)
-	save := qt.NewQPushButton5("ثبت پرداخت", container)
+	save := qt.NewQPushButton5("ثبت دریافت", container)
 	save.OnClicked(func() {
-		raw := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(amount.Text(), ",", ""), "٬", ""))
-		value, parseErr := strconv.ParseInt(raw, 10, 64)
-		if parseErr != nil || value <= 0 {
-			status.SetText("مبلغ پرداخت باید عدد صحیح مثبت باشد.")
+		allocations := make([]domain.PaymentAllocation, 0, len(inputs))
+		var total int64
+		for _, input := range inputs {
+			raw := normalizeInvoiceDigits(strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(input.amount.Text(), ",", ""), "٬", "")))
+			if raw == "" {
+				continue
+			}
+			value, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil || value < 0 {
+				status.SetText("مبلغ تخصیص باید عدد صحیح نامنفی باشد.")
+				return
+			}
+			if value == 0 {
+				continue
+			}
+			if value > input.invoice.Balance {
+				status.SetText("تخصیص از ماندهٔ فاکتور " + input.invoice.Number + " بیشتر است.")
+				return
+			}
+			if total > int64(^uint64(0)>>1)-value {
+				status.SetText("جمع تخصیص‌ها بیش از محدودهٔ مجاز است.")
+				return
+			}
+			total += value
+			allocations = append(allocations, domain.PaymentAllocation{InvoiceID: input.invoice.ID, Amount: domain.Money(value)})
+		}
+		if total <= 0 {
+			status.SetText("حداقل یک مبلغ تخصیص مثبت وارد کنید.")
 			return
 		}
-		payment := domain.Payment{ExternalRef: strings.TrimSpace(reference.Text()), Amount: domain.Money(value), Currency: currency, PaidAt: time.Now(), Method: strings.TrimSpace(method.Text()), Note: strings.TrimSpace(note.Text())}
-		_, saveErr := invoices.RegisterPayment(ctx, payment, []domain.PaymentAllocation{{InvoiceID: item.ID, Amount: domain.Money(value)}})
-		if saveErr != nil {
-			status.SetText("ثبت پرداخت انجام نشد: " + saveErr.Error())
+		payment := domain.Payment{ExternalRef: strings.TrimSpace(reference.Text()), Amount: domain.Money(total), Currency: currency, PaidAt: time.Now(), Method: strings.TrimSpace(method.Text()), Note: strings.TrimSpace(note.Text())}
+		if _, saveErr := invoices.RegisterPayment(ctx, payment, allocations); saveErr != nil {
+			status.SetText("ثبت دریافت انجام نشد: " + saveErr.Error())
 			return
 		}
-		status.SetText("پرداخت با موفقیت ثبت شد.")
+		status.SetText("دریافت و تخصیص‌ها با موفقیت ثبت شدند.")
 		if onSaved != nil {
 			onSaved()
 		}
@@ -501,6 +574,73 @@ func showInvoicePaymentWindow(parent *qt.QWidget, item domain.InvoiceListItem, i
 	})
 	layout.AddWidget(save.QWidget)
 	window.SetCentralWidget(container)
+	window.Show()
+}
+func showInvoicePaymentHistoryWindow(parent *qt.QWidget, invoices *application.Invoices, ctx context.Context) {
+	window := qt.NewQMainWindow2()
+	window.QWidget.SetWindowTitle("دفتر دریافت‌ها")
+	window.QWidget.SetMinimumSize2(820, 600)
+	root := qt.NewQWidget(window.QWidget)
+	layout := qt.NewQVBoxLayout2()
+	layout.SetContentsMargins(20, 18, 20, 18)
+	root.SetLayout(layout.QLayout)
+	title := qt.NewQLabel5("سوابق دریافت و تخصیص به فاکتورها", root)
+	title.SetStyleSheet("font-size:15pt;font-weight:700;color:#102a56;")
+	layout.AddWidget(title.QWidget)
+	history, err := invoices.PaymentHistory(ctx)
+	if err != nil {
+		layout.AddWidget(qt.NewQLabel5("خواندن دفتر دریافت‌ها ناموفق بود: "+err.Error(), root).QWidget)
+	} else if len(history) == 0 {
+		layout.AddWidget(qt.NewQLabel5("هنوز دریافتی ثبت نشده است.", root).QWidget)
+	} else {
+		scroll := qt.NewQScrollArea(root)
+		scroll.SetWidgetResizable(true)
+		list := qt.NewQWidget(scroll.QWidget)
+		listLayout := qt.NewQVBoxLayout2()
+		listLayout.SetSpacing(10)
+		list.SetLayout(listLayout.QLayout)
+		for _, entry := range history {
+			record := entry
+			card := qt.NewQWidget(list)
+			setInvoiceObjectName(card, "invoiceCard")
+			cardLayout := qt.NewQVBoxLayout2()
+			cardLayout.SetContentsMargins(14, 12, 14, 12)
+			card.SetLayout(cardLayout.QLayout)
+			jalaliDate := record.Payment.PaidAt.Format("2006-01-02")
+			if j, convErr := domain.GregorianToJalali(record.Payment.PaidAt.Year(), int(record.Payment.PaidAt.Month()), record.Payment.PaidAt.Day()); convErr == nil {
+				jalaliDate = fmt.Sprintf("%04d/%02d/%02d", j.Year, j.Month, j.Day)
+			}
+			currency := "تومان"
+			if record.Payment.Currency == domain.CurrencyRial {
+				currency = "ریال"
+			}
+			details := fmt.Sprintf("%s · %s · %s %s", jalaliDate, record.Payment.Method, formatCustomerMoney(int64(record.Payment.Amount)), currency)
+			if record.Payment.ExternalRef != "" {
+				details += " · پیگیری: " + record.Payment.ExternalRef
+			}
+			cardLayout.AddWidget(qt.NewQLabel5(details, card).QWidget)
+			if record.ReversedAt.IsZero() {
+				for _, allocation := range record.Allocations {
+					cardLayout.AddWidget(qt.NewQLabel5(fmt.Sprintf("تخصیص به فاکتور %s: %s %s", allocation.InvoiceNumber, formatCustomerMoney(int64(allocation.Amount)), currency), card).QWidget)
+				}
+			} else {
+				reversed := qt.NewQLabel5("ابطال‌شده از فضای وب · "+record.ReversalReason, card)
+				reversed.SetStyleSheet("color:#a33a24;font-weight:700;")
+				cardLayout.AddWidget(reversed.QWidget)
+			}
+			if record.Payment.Note != "" {
+				cardLayout.AddWidget(qt.NewQLabel5(record.Payment.Note, card).QWidget)
+			}
+			listLayout.AddWidget(card)
+		}
+		listLayout.AddStretch()
+		scroll.SetWidget(list)
+		layout.AddWidget(scroll.QWidget)
+	}
+	close := qt.NewQPushButton5("بستن", root)
+	close.OnClicked(func() { window.Close() })
+	layout.AddWidget(close.QWidget)
+	window.SetCentralWidget(root)
 	window.Show()
 }
 

@@ -64,7 +64,9 @@ func RenderInvoicePreview(data PreviewData) (string, error) {
 </style></head><body>`,
 		esc(data.Document.Number), esc(data.Template.PageSize), orientation, esc(data.Template.FontFamily), data.Template.FontSize, esc(data.Template.PrimaryColor), esc(data.Template.PrimaryColor), esc(data.Template.AccentColor), esc(data.Template.PrimaryColor), esc(data.Template.PrimaryColor), esc(data.Template.AccentColor))
 	b.WriteString("<header>")
-	if data.Template.ShowLogo && data.Letterhead.LogoPath != "" && !strings.Contains(data.Letterhead.LogoPath, "://") {
+	if data.Template.ShowLogo && data.Template.LogoData != "" {
+		fmt.Fprintf(&b, `<img class="logo" src="%s" alt="لوگو">`, esc(data.Template.LogoData))
+	} else if data.Template.ShowLogo && data.Letterhead.LogoPath != "" && !strings.Contains(data.Letterhead.LogoPath, "://") {
 		fmt.Fprintf(&b, `<img class="logo" src="file:///%s" alt="لوگو">`, esc(strings.ReplaceAll(data.Letterhead.LogoPath, `\`, "/")))
 	}
 	b.WriteString("<div class=\"brand\">")
@@ -139,6 +141,31 @@ func RenderInvoicePreview(data PreviewData) (string, error) {
 			fmt.Fprintf(&b, `<p><strong>%s</strong> — صاحب حساب: %s</p><p>شماره حساب: <bdi dir="ltr">%s</bdi> | کارت: <bdi dir="ltr">%s</bdi> | شبا: <bdi dir="ltr">%s</bdi></p>`, esc(banking.ResolveBankName(a.BankName, a.IBAN, a.CardNumber)), esc(a.AccountHolder), esc(a.AccountNumber), esc(a.CardNumber), esc(banking.DisplayIBAN(a.IBAN)))
 		}
 		b.WriteString("</div>")
+	}
+	if data.Template.ShowSeal || data.Template.ShowSignature {
+		b.WriteString(`<div style="display:flex;gap:12px;margin-top:22px;break-inside:avoid">`)
+		if data.Template.ShowSeal {
+			b.WriteString(`<div style="flex:1;min-height:90px;border:1px dashed #9aa6b2;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:10px;color:#667085">`)
+			if data.Template.SealData != "" {
+				fmt.Fprintf(&b, `<div style="text-align:center"><img src="%s" alt="مهر" style="display:block;max-width:100%%;max-height:80px;object-fit:contain;margin:auto">مهر فروشگاه</div>`, esc(data.Template.SealData))
+			} else {
+				b.WriteString("مهر فروشگاه")
+			}
+			b.WriteString("</div>")
+		}
+		if data.Template.ShowSignature {
+			b.WriteString(`<div style="flex:1;min-height:90px;border:1px dashed #9aa6b2;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:10px;color:#667085">`)
+			if data.Template.SignatureData != "" {
+				fmt.Fprintf(&b, `<div style="text-align:center"><img src="%s" alt="امضا" style="display:block;max-width:100%%;max-height:80px;object-fit:contain;margin:auto">امضای فروشنده</div>`, esc(data.Template.SignatureData))
+			} else {
+				b.WriteString("امضای فروشنده")
+			}
+			b.WriteString("</div>")
+		}
+		b.WriteString("</div>")
+	}
+	if strings.TrimSpace(data.Template.ThankYou) != "" {
+		fmt.Fprintf(&b, `<div style="margin-top:20px;padding-top:12px;border-top:1px solid #ddd;text-align:center;color:#555">%s</div>`, esc(data.Template.ThankYou))
 	}
 	b.WriteString(`<div class="footer">این پیش‌نمایش بر اساس اطلاعات ذخیره‌شده سند و قالب انتخابی تولید شده است.</div></body></html>`)
 	return b.String(), nil

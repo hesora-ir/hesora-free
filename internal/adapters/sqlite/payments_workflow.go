@@ -51,7 +51,7 @@ func (s *Store) RegisterPayment(ctx context.Context, payment domain.Payment, all
 			return 0, fmt.Errorf("واحد پول پرداخت با فاکتور %d یکسان نیست", allocation.InvoiceID)
 		}
 		var allocated int64
-		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount_minor),0) FROM payment_allocations WHERE invoice_id=?", allocation.InvoiceID).Scan(&allocated); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount_minor),0) FROM payment_allocations pa WHERE invoice_id=? AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)", allocation.InvoiceID).Scan(&allocated); err != nil {
 			return 0, err
 		}
 		if allocated > total || int64(allocation.Amount) > total-allocated {
@@ -78,7 +78,7 @@ func (s *Store) InvoiceBalance(ctx context.Context, invoiceID int64) (domain.Mon
 		return 0, errors.New("شناسه فاکتور نامعتبر است")
 	}
 	var total, paid int64
-	err := s.db.QueryRowContext(ctx, "SELECT total_minor+additional_charge_minor, (SELECT COALESCE(SUM(amount_minor),0) FROM payment_allocations WHERE invoice_id=invoices.id) FROM invoices WHERE id=?", invoiceID).Scan(&total, &paid)
+	err := s.db.QueryRowContext(ctx, "SELECT total_minor+additional_charge_minor, (SELECT COALESCE(SUM(amount_minor),0) FROM payment_allocations pa WHERE pa.invoice_id=invoices.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)) FROM invoices WHERE id=?", invoiceID).Scan(&total, &paid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, errors.New("فاکتور پیدا نشد")
 	}
@@ -89,4 +89,56 @@ func (s *Store) InvoiceBalance(ctx context.Context, invoiceID int64) (domain.Mon
 		return 0, errors.New("مجموع پرداخت‌های تخصیص‌یافته از مبلغ فاکتور بیشتر است")
 	}
 	return domain.Money(total - paid), nil
+}
+
+func (s *Store) ListPaymentHistory(ctx context.Context) ([]domain.PaymentHistoryEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id,p.external_ref,p.amount_minor,p.currency,p.paid_at,p.method,p.note,
+		r.reversed_at,r.reason,pa.invoice_id,i.number,pa.amount_minor
+		FROM payments p
+		LEFT JOIN cloud_payment_reversals r ON r.local_payment_id=p.id
+		LEFT JOIN payment_allocations pa ON pa.payment_id=p.id
+		LEFT JOIN invoices i ON i.id=pa.invoice_id
+		ORDER BY p.id DESC,pa.invoice_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]domain.PaymentHistoryEntry, 0)
+	positions := make(map[int64]int)
+	for rows.Next() {
+		var id, amount int64
+		var reference, currency, paidAt, method, note string
+		var reversedAt sql.NullInt64
+		var reversalReason sql.NullString
+		var invoiceID sql.NullInt64
+		var invoiceNumber sql.NullString
+		var allocationAmount sql.NullInt64
+		if err := rows.Scan(&id, &reference, &amount, &currency, &paidAt, &method, &note, &reversedAt, &reversalReason, &invoiceID, &invoiceNumber, &allocationAmount); err != nil {
+			return nil, err
+		}
+		position, exists := positions[id]
+		if !exists {
+			date, parseErr := time.Parse(time.RFC3339Nano, paidAt)
+			if parseErr != nil {
+				date, parseErr = time.Parse("2006-01-02", paidAt)
+			}
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse payment %d date: %w", id, parseErr)
+			}
+			entry := domain.PaymentHistoryEntry{Payment: domain.Payment{ID: id, ExternalRef: reference, Amount: domain.Money(amount), Currency: domain.Currency(currency), PaidAt: date, Method: method, Note: note}}
+			if reversedAt.Valid {
+				entry.ReversedAt = time.Unix(reversedAt.Int64, 0).UTC()
+			}
+			if reversalReason.Valid {
+				entry.ReversalReason = reversalReason.String
+			}
+			entries = append(entries, entry)
+			position = len(entries) - 1
+			positions[id] = position
+		}
+		if invoiceID.Valid {
+			entries[position].Allocations = append(entries[position].Allocations, domain.PaymentHistoryAllocation{InvoiceID: invoiceID.Int64, InvoiceNumber: invoiceNumber.String, Amount: domain.Money(allocationAmount.Int64)})
+		}
+	}
+	return entries, rows.Err()
 }

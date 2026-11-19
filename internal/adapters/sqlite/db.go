@@ -98,6 +98,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("ایجاد جدول نسخه مهاجرت‌ها: %w", err)
 	}
 
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cloud_document_map (
+		kind TEXT NOT NULL, cloud_id TEXT NOT NULL, local_id INTEGER NOT NULL,
+		updated_at TEXT NOT NULL, PRIMARY KEY(kind,cloud_id), UNIQUE(kind,local_id)
+	)`); err != nil {
+		return fmt.Errorf("create cloud document map: %w", err)
+	}
 	entries, err := fs.Glob(migrationFiles, "migrations/*.sql")
 	if err != nil {
 		return fmt.Errorf("فهرست migrationها: %w", err)
@@ -149,6 +155,55 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("ثبت migration %s: %w", base, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cloud_document_map (
+		kind TEXT NOT NULL, cloud_id TEXT NOT NULL, local_id INTEGER NOT NULL,
+		updated_at TEXT NOT NULL, PRIMARY KEY(kind,cloud_id), UNIQUE(kind,local_id)
+	)`); err != nil {
+		return fmt.Errorf("ایجاد نگاشت همگام‌سازی ابری: %w", err)
+	}
+	if err := s.ensureLocalCloudChangeTriggers(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureLocalCloudChangeTriggers(ctx context.Context) error {
+	type source struct {
+		table, kind, parent string
+		parentDelete        bool
+	}
+	sources := []source{
+		{"customers", "customer", "id", true},
+		{"customer_phones", "customer", "customer_id", false},
+		{"customer_addresses", "customer", "customer_id", false},
+		{"issuer_profiles", "issuer", "id", true},
+		{"issuer_profile_phones", "issuer", "issuer_profile_id", false},
+		{"issuer_profile_bank_details", "issuer", "issuer_profile_id", false},
+		{"invoices", "invoice", "id", true},
+		{"invoice_items", "invoice", "invoice_id", false},
+		{"document_templates", "template", "id", true},
+		{"expenses", "expense", "id", true},
+		{"template_bank_accounts", "template", "template_id", false},
+	}
+	for _, src := range sources {
+		for _, event := range []string{"INSERT", "UPDATE", "DELETE"} {
+			name := fmt.Sprintf("hesora_sync_%s_%s", src.table, strings.ToLower(event[:1]))
+			row := "NEW"
+			op := "upsert"
+			if event == "DELETE" {
+				row = "OLD"
+				if src.parentDelete {
+					op = "delete"
+				}
+			}
+			stmt := fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS %s AFTER %s ON %s
+				WHEN (SELECT applying_remote FROM cloud_sync_control WHERE id=1)=0
+				BEGIN INSERT INTO local_cloud_changes(kind,local_id,operation,created_at) VALUES('%s',%s.%s,'%s',CURRENT_TIMESTAMP); END;`, name, event, src.table, src.kind, row, src.parent, op)
+			if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("install cloud sync trigger %s: %w", name, err)
+			}
 		}
 	}
 	return nil

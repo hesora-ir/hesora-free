@@ -45,7 +45,7 @@ foreach ($required in $requiredNames) {
     }
 }
 
-$dialogNames = Read-MsiColumn "SELECT Name FROM Dialog"
+$dialogNames = Read-MsiColumn "SELECT Dialog FROM Dialog"
 $requiredDialogs = @("WelcomeDlg", "LicenseAgreementDlg", "InstallDirDlg", "VerifyReadyDlg")
 foreach ($required in $requiredDialogs) {
     if ($required -notin $dialogNames) {

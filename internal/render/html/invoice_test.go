@@ -1,6 +1,7 @@
 package html
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,43 @@ func TestRenderInvoicePreview(t *testing.T) {
 	}
 	if strings.Contains(got, "خدمت <ویژه>") {
 		t.Fatal("unescaped user content in HTML")
+	}
+}
+
+func TestRenderInvoicePreviewAppliesWebTemplateOptions(t *testing.T) {
+	data := previewFixture()
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAEElEQVR4nGL6//8/IAAA//8GBgMAt2YRIQAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageData, err := domain.EncodeTemplateImage(png, "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.Template.Prefix = "FACT-"
+	data.Template.ShowLogo = true
+	data.Template.LogoData = imageData
+	data.Template.ShowSeal = true
+	data.Template.SealData = imageData
+	data.Template.ShowSignature = true
+	data.Template.SignatureData = imageData
+	data.Template.ThankYou = "از خرید شما سپاسگزاریم"
+	got, err := RenderInvoicePreview(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"مهر فروشگاه", "امضای فروشنده", "data:image/png;base64", "از خرید شما سپاسگزاریم"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered HTML missing template option %q", want)
+		}
+	}
+	data.Template.ThankYou = `<script>alert(1)</script>`
+	got, err = RenderInvoicePreview(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, `<script>alert(1)</script>`) || !strings.Contains(got, "&lt;script&gt;") {
+		t.Fatal("template footer was not safely escaped")
 	}
 }
 

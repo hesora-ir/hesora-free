@@ -186,7 +186,7 @@ func (s *Store) ListInvoiceDocuments(ctx context.Context, query string) ([]domai
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT i.id,i.number,i.kind,i.document_type,i.status,i.currency,i.customer_snapshot,i.issue_date,i.total_minor+i.additional_charge_minor,
 			CASE WHEN i.kind='invoice' AND i.status='issued'
-				THEN i.total_minor+i.additional_charge_minor-COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id),0)
+				THEN i.total_minor+i.additional_charge_minor-COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.invoice_id=i.id AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)),0)
 				ELSE 0 END
 		FROM invoices i
 		WHERE (?='' OR i.number LIKE '%'||?||'%' OR i.customer_snapshot LIKE '%'||?||'%')
@@ -336,7 +336,7 @@ func (s *Store) UpdateInvoiceDraft(ctx context.Context, doc domain.InvoiceDocume
 	}
 	if currentStatus == string(domain.InvoiceIssued) {
 		var paid, previousTotal int64
-		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount_minor),0) FROM payment_allocations WHERE invoice_id=?", doc.ID).Scan(&paid); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount_minor),0) FROM payment_allocations pa WHERE invoice_id=? AND NOT EXISTS(SELECT 1 FROM cloud_payment_reversals r WHERE r.local_payment_id=pa.payment_id)", doc.ID).Scan(&paid); err != nil {
 			return err
 		}
 		if err := tx.QueryRowContext(ctx, "SELECT total_minor+additional_charge_minor FROM invoices WHERE id=?", doc.ID).Scan(&previousTotal); err != nil {

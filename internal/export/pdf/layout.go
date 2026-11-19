@@ -1,6 +1,8 @@
 package pdf
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"os"
@@ -81,6 +83,12 @@ func renderInvoice(data invoicehtml.PreviewData, customer, issuer invoicehtml.Pa
 			l.section("اطلاعات پرداخت", lines)
 		}
 	}
+	if strings.TrimSpace(data.Template.ThankYou) != "" {
+		l.section("پیام فروشگاه", []string{data.Template.ThankYou})
+	}
+	if data.Template.ShowSeal || data.Template.ShowSignature {
+		l.signatureMarks()
+	}
 	if err := os.MkdirAll(parent(output), 0755); err != nil {
 		return err
 	}
@@ -88,6 +96,57 @@ func renderInvoice(data invoicehtml.PreviewData, customer, issuer invoicehtml.Pa
 		return fmt.Errorf("تولید PDF ناموفق بود: %w", err)
 	}
 	return nil
+}
+
+func (l *invoiceLayout) signatureMarks() {
+	labels := make([]struct{ label, data string }, 0, 2)
+	if l.data.Template.ShowSeal {
+		labels = append(labels, struct{ label, data string }{"مهر فروشگاه", l.data.Template.SealData})
+	}
+	if l.data.Template.ShowSignature {
+		labels = append(labels, struct{ label, data string }{"امضای فروشنده", l.data.Template.SignatureData})
+	}
+	if len(labels) == 0 {
+		return
+	}
+	const height = 28.0
+	l.ensure(height + 5)
+	y := l.p.GetY() + 4
+	width := l.width / float64(len(labels))
+	for i, asset := range labels {
+		x := l.left + float64(i)*width
+		l.p.SetDrawColor(rule[0], rule[1], rule[2])
+		l.p.SetDashPattern([]float64{1.2, 1.2}, 0)
+		l.p.RoundedRect(x+2, y, width-4, height, 2, "1234", "D")
+		l.p.SetDashPattern([]float64{}, 0)
+		if imageName, imageType, ok := registerTemplateImage(l.p, asset.data, fmt.Sprintf("template-mark-%d", i)); ok {
+			l.p.ImageOptions(imageName, x+5, y+3, width-10, height-11, true, fpdf.ImageOptions{ImageType: imageType, ReadDpi: true}, 0, "")
+		}
+		l.text(x+4, y+height-7, width-8, 5, asset.label, 8, "", "C", muted)
+	}
+	l.p.SetY(y + height + 4)
+}
+
+func registerTemplateImage(p *fpdf.Fpdf, data, name string) (string, string, bool) {
+	parts := strings.SplitN(data, ",", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	imageType := ""
+	switch parts[0] {
+	case "data:image/png;base64":
+		imageType = "PNG"
+	case "data:image/jpeg;base64":
+		imageType = "JPG"
+	default:
+		return "", "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil || len(decoded) == 0 {
+		return "", "", false
+	}
+	info := p.RegisterImageOptionsReader(name, fpdf.ImageOptions{ImageType: imageType, ReadDpi: true}, bytes.NewReader(decoded))
+	return name, imageType, info != nil && p.Error() == nil
 }
 
 // Every string is shaped only after wrapping its logical text into individual
@@ -168,7 +227,11 @@ func (l *invoiceLayout) header(issuer invoicehtml.PartySnapshot) {
 	titleW := l.width - brandW - codeW - 6
 	logoType := ""
 	logoPath := l.data.Letterhead.LogoPath
-	if l.data.Template.ShowLogo && logoPath != "" {
+	if l.data.Template.ShowLogo && l.data.Template.LogoData != "" {
+		if imageName, imageType, ok := registerTemplateImage(p, l.data.Template.LogoData, "template-logo"); ok {
+			logoPath, logoType = imageName, imageType
+		}
+	} else if l.data.Template.ShowLogo && logoPath != "" {
 		ext := strings.ToLower(filepath.Ext(logoPath))
 		if ext == ".png" {
 			logoType = "PNG"

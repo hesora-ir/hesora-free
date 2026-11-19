@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,13 +18,21 @@ func TestExportInvoiceWithBundledPersianTTF(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(fontDir, fontName)); err != nil {
 		t.Fatalf("bundled Persian TTF missing: %v", err)
 	}
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAEElEQVR4nGL6//8/IAAA//8GBgMAt2YRIQAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageData, err := domain.EncodeTemplateImage(png, "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
 	data := invoicehtml.PreviewData{
 		Document: domain.InvoiceDocument{
 			Number: "INV-TTF-1", IssueDate: time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC),
 			Currency: domain.CurrencyToman,
 			Items:    []domain.InvoiceItem{{Description: "خدمات نرم‌افزاری", Quantity: 1, Unit: "مورد", UnitPrice: 120000}},
 		},
-		Template: domain.DocumentTemplate{Name: "پیش‌فرض", PageSize: "A4", Orientation: "portrait", FontFamily: "IRANSansX", FontSize: 10, PrimaryColor: "#285082", AccentColor: "#4777A8"},
+		Template: domain.DocumentTemplate{Name: "پیش‌فرض", PageSize: "A4", Orientation: "portrait", FontFamily: "IRANSansX", FontSize: 10, PrimaryColor: "#285082", AccentColor: "#4777A8", ShowLogo: true, LogoData: imageData, ShowSeal: true, SealData: imageData, ShowSignature: true, SignatureData: imageData},
 		Totals:   domain.FinancialTotals{Subtotal: 120000, Total: 120000},
 	}
 	outputPath := filepath.Join(t.TempDir(), "invoice.pdf")
@@ -36,6 +45,9 @@ func TestExportInvoiceWithBundledPersianTTF(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(content), "%PDF-") {
 		t.Fatal("output is not a PDF document")
+	}
+	if !strings.Contains(string(content), "/Subtype /Image") {
+		t.Fatal("PDF output did not embed the template images")
 	}
 }
 

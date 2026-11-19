@@ -145,7 +145,7 @@ func (s *Store) SaveDocumentTemplate(ctx context.Context, t domain.DocumentTempl
 	}
 	var id int64
 	if t.ID == 0 {
-		r, e := tx.ExecContext(ctx, `INSERT INTO document_templates(name,page_size,orientation,font_family,font_size,primary_color,accent_color,letterhead_id,show_logo,show_tax,show_bank_accounts,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Name, t.PageSize, t.Orientation, t.FontFamily, t.FontSize, t.PrimaryColor, t.AccentColor, letterhead, boolInt(t.ShowLogo), boolInt(t.ShowTax), boolInt(t.ShowBankAccounts), now, now)
+		r, e := tx.ExecContext(ctx, `INSERT INTO document_templates(name,prefix,thank_you,show_seal,show_signature,page_size,orientation,font_family,font_size,primary_color,accent_color,letterhead_id,show_logo,show_tax,show_bank_accounts,created_at,updated_at,logo_data,seal_data,signature_data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Name, t.Prefix, t.ThankYou, boolInt(t.ShowSeal), boolInt(t.ShowSignature), t.PageSize, t.Orientation, t.FontFamily, t.FontSize, t.PrimaryColor, t.AccentColor, letterhead, boolInt(t.ShowLogo), boolInt(t.ShowTax), boolInt(t.ShowBankAccounts), now, now, t.LogoData, t.SealData, t.SignatureData)
 		if e != nil {
 			return 0, fmt.Errorf("ذخیره قالب: %w", e)
 		}
@@ -154,7 +154,7 @@ func (s *Store) SaveDocumentTemplate(ctx context.Context, t domain.DocumentTempl
 			return 0, e
 		}
 	} else {
-		r, e := tx.ExecContext(ctx, `UPDATE document_templates SET name=?,page_size=?,orientation=?,font_family=?,font_size=?,primary_color=?,accent_color=?,letterhead_id=?,show_logo=?,show_tax=?,show_bank_accounts=?,updated_at=? WHERE id=?`, t.Name, t.PageSize, t.Orientation, t.FontFamily, t.FontSize, t.PrimaryColor, t.AccentColor, letterhead, boolInt(t.ShowLogo), boolInt(t.ShowTax), boolInt(t.ShowBankAccounts), now, t.ID)
+		r, e := tx.ExecContext(ctx, `UPDATE document_templates SET name=?,prefix=?,thank_you=?,show_seal=?,show_signature=?,page_size=?,orientation=?,font_family=?,font_size=?,primary_color=?,accent_color=?,letterhead_id=?,show_logo=?,show_tax=?,show_bank_accounts=?,updated_at=?,logo_data=?,seal_data=?,signature_data=? WHERE id=?`, t.Name, t.Prefix, t.ThankYou, boolInt(t.ShowSeal), boolInt(t.ShowSignature), t.PageSize, t.Orientation, t.FontFamily, t.FontSize, t.PrimaryColor, t.AccentColor, letterhead, boolInt(t.ShowLogo), boolInt(t.ShowTax), boolInt(t.ShowBankAccounts), now, t.LogoData, t.SealData, t.SignatureData, t.ID)
 		if e != nil {
 			return 0, fmt.Errorf("ویرایش قالب: %w", e)
 		}
@@ -182,7 +182,7 @@ func (s *Store) SaveDocumentTemplate(ctx context.Context, t domain.DocumentTempl
 }
 
 func (s *Store) ListDocumentTemplates(ctx context.Context) ([]domain.DocumentTemplate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,page_size,orientation,font_family,font_size,primary_color,accent_color,COALESCE(letterhead_id,0),show_logo,show_tax,show_bank_accounts,created_at,updated_at FROM document_templates ORDER BY id DESC LIMIT 500`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,prefix,thank_you,show_seal,show_signature,page_size,orientation,font_family,font_size,primary_color,accent_color,COALESCE(letterhead_id,0),show_logo,show_tax,show_bank_accounts,created_at,updated_at,logo_data,seal_data,signature_data FROM document_templates ORDER BY id DESC LIMIT 500`)
 	if err != nil {
 		return nil, fmt.Errorf("خواندن قالب‌ها: %w", err)
 	}
@@ -193,14 +193,16 @@ func (s *Store) ListDocumentTemplates(ctx context.Context) ([]domain.DocumentTem
 	entries := make([]entry, 0)
 	for rows.Next() {
 		var e entry
-		var logo, tax, banks int
-		if err := rows.Scan(&e.t.ID, &e.t.Name, &e.t.PageSize, &e.t.Orientation, &e.t.FontFamily, &e.t.FontSize, &e.t.PrimaryColor, &e.t.AccentColor, &e.t.LetterheadID, &logo, &tax, &banks, &e.c, &e.u); err != nil {
+		var logo, tax, banks, seal, signature int
+		if err := rows.Scan(&e.t.ID, &e.t.Name, &e.t.Prefix, &e.t.ThankYou, &seal, &signature, &e.t.PageSize, &e.t.Orientation, &e.t.FontFamily, &e.t.FontSize, &e.t.PrimaryColor, &e.t.AccentColor, &e.t.LetterheadID, &logo, &tax, &banks, &e.c, &e.u, &e.t.LogoData, &e.t.SealData, &e.t.SignatureData); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		e.t.ShowLogo = logo == 1
 		e.t.ShowTax = tax == 1
 		e.t.ShowBankAccounts = banks == 1
+		e.t.ShowSeal = seal == 1
+		e.t.ShowSignature = signature == 1
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {

@@ -23,6 +23,10 @@ type InvoiceQueryStore interface {
 	UpdateInvoiceDraft(context.Context, domain.InvoiceDocument) error
 }
 
+type InvoicePaymentHistoryStore interface {
+	ListPaymentHistory(context.Context) ([]domain.PaymentHistoryEntry, error)
+}
+
 type Invoices struct{ store InvoiceWorkflowStore }
 
 func NewInvoices(store InvoiceWorkflowStore) *Invoices { return &Invoices{store: store} }
@@ -47,6 +51,14 @@ func (s *Invoices) RegisterPayment(ctx context.Context, payment domain.Payment, 
 
 func (s *Invoices) Balance(ctx context.Context, invoiceID int64) (domain.Money, error) {
 	return s.store.InvoiceBalance(ctx, invoiceID)
+}
+
+func (s *Invoices) PaymentHistory(ctx context.Context) ([]domain.PaymentHistoryEntry, error) {
+	store, ok := s.store.(InvoicePaymentHistoryStore)
+	if !ok {
+		return nil, errors.New("مخزن فاکتور از دفتر دریافت‌ها پشتیبانی نمی‌کند")
+	}
+	return store.ListPaymentHistory(ctx)
 }
 
 func (s *Invoices) List(ctx context.Context, query string) ([]domain.InvoiceListItem, error) {
