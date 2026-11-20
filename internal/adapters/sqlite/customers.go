@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/hesora-ir/hesora-free/internal/domain"
-	"github.com/hesora-ir/hesora-free/internal/licensing"
 )
 
 func normalizeCustomer(c domain.Customer) domain.Customer {
@@ -78,13 +77,6 @@ func (s *Store) CreateCustomer(ctx context.Context, customer domain.Customer) (i
 		return 0, fmt.Errorf("شروع تراکنش مشتری: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var customerCount int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM customers").Scan(&customerCount); err != nil {
-		return 0, fmt.Errorf("بررسی سقف مشتریان: %w", err)
-	}
-	if !s.ProEnabled() && customerCount >= licensing.FreeCustomerLimit {
-		return 0, fmt.Errorf("نسخهٔ رایگان حداکثر %d مشتری می‌پذیرد", licensing.FreeCustomerLimit)
-	}
 	result, err := tx.ExecContext(ctx, "INSERT INTO customers(customer_type,first_name,last_name,legal_name,tax_id,name,phone,email,address,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
 		customer.Type, customer.FirstName, customer.LastName, customer.LegalName, customer.TaxID,
 		customer.Name, customer.Phone, strings.TrimSpace(customer.Email), customer.Address, now, now)

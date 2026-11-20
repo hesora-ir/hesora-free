@@ -54,7 +54,33 @@ type License struct {
 	KeyID            string            `json:"key_id,omitempty"`
 	PublicKey        string            `json:"public_key,omitempty"`
 	PublicKeys       map[string]string `json:"public_keys,omitempty"`
+	ServerTime       int64             `json:"server_time,omitempty"`
 }
+
+type TrialStatus struct {
+	ExpiresAt  int64 `json:"expires_at"`
+	ServerTime int64 `json:"server_time"`
+}
+
+func (c *Client) StartTrial(ctx context.Context, installationID, deviceFingerprint string) (License, error) {
+	var license License
+	err := c.json(ctx, http.MethodPost, "/licenses/trial", map[string]string{
+		"installation_id":    installationID,
+		"device_fingerprint": deviceFingerprint,
+	}, &license)
+	return license, err
+}
+
+func (c *Client) ValidateTrial(ctx context.Context, installationID, deviceFingerprint, token string) (TrialStatus, error) {
+	var result TrialStatus
+	err := c.json(ctx, http.MethodPost, "/licenses/trial/validate", map[string]string{
+		"installation_id":    installationID,
+		"device_fingerprint": deviceFingerprint,
+		"token":              token,
+	}, &result)
+	return result, err
+}
+
 type Account struct {
 	User struct {
 		ID    string `json:"id"`
@@ -208,6 +234,27 @@ func (c *Client) Account(ctx context.Context) (Account, error) {
 	var a Account
 	err := c.json(ctx, "GET", "/me", nil, &a)
 	return a, err
+}
+
+func (c *Client) MagicLink(ctx context.Context) (string, error) {
+	var result struct {
+		URL string `json:"url"`
+	}
+	if err := c.json(ctx, http.MethodPost, "/account/magic-link", map[string]any{}, &result); err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(result.URL, c.baseURL+"/magic/") {
+		return "", errors.New("Ù¾Ø§Ø³Ø® Ù¾ÛŒÙˆÙ†Ø¯ ÙˆØ±ÙˆØ¯ Ù†Ø§Ù…Ø¹ØªØ¨Ø± Ø§Ø³Øª")
+	}
+	return result.URL, nil
+}
+
+func (c *Client) CreateSupportTicket(ctx context.Context, subject, body string) (string, error) {
+	var result struct {
+		ID string `json:"id"`
+	}
+	err := c.json(ctx, http.MethodPost, "/support/tickets", map[string]string{"subject": subject, "body": body}, &result)
+	return result.ID, err
 }
 func (c *Client) PublicKey(ctx context.Context) (ed25519.PublicKey, error) {
 	keys, err := c.PublicKeys(ctx)

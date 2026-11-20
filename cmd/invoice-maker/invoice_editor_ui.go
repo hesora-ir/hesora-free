@@ -516,7 +516,7 @@ func buildInvoicePage(parent *qt.QWidget, contacts *application.Contacts, invoic
 		if documentKind == "proforma" {
 			prefix = "PF-"
 		}
-		if existing == nil && opts.templates != nil && opts.templates.ProEnabled() {
+		if existing == nil && opts.templates != nil {
 			savedTemplates, templateErr := opts.templates.DocumentTemplates(ctx)
 			if templateErr != nil {
 				return doc, fmt.Errorf("خواندن پیشوند قالب فاکتور: %w", templateErr)

@@ -20,6 +20,8 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 }
 $publishDir = Join-Path $OutputRoot "publish"
 $installerDir = Join-Path $OutputRoot "installer"
+$launcherDir = Join-Path $OutputRoot "installer\launcher"
+$launcherPath = Join-Path $launcherDir "hesora-launcher.exe"
 $exePath = Join-Path $publishDir "invoice-maker.exe"
 $windeployqt = Join-Path $QtRoot "bin\windeployqt.exe"
 $qmake = Join-Path $QtRoot "bin\qmake.exe"
@@ -115,12 +117,17 @@ if (-not [string]::IsNullOrWhiteSpace($env:HESORA_LICENSE_PUBLIC_KEY)) {
 if (Test-Path -LiteralPath $publishDir) { Remove-Item -LiteralPath $publishDir -Recurse -Force }
 New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
 New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
+New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
 
 Push-Location $repoRoot
 try {
     Write-Host "Building Windows GUI application with $goVersion (no console window)"
     & $goCommand.Source build "-p=$Jobs" -trimpath "-ldflags=$ldflags" -o $exePath ./cmd/invoice-maker
     if ($LASTEXITCODE -ne 0) { Fail "go build failed with exit code $LASTEXITCODE." }
+
+    Write-Host "Building post-install launcher"
+    & $goCommand.Source build -trimpath -ldflags="-H=windowsgui" -o $launcherPath ./cmd/installer-launcher
+    if ($LASTEXITCODE -ne 0) { Fail "post-install launcher build failed with exit code $LASTEXITCODE." }
 
     Write-Host "Deploying Qt runtime from $QtRoot"
     & $windeployqt --release --compiler-runtime --no-translations --dir $publishDir $exePath
@@ -153,7 +160,7 @@ try {
     }
 
     Write-Host "Building interactive MSI with WiX $wixVersion"
-    & dotnet build (Join-Path $repoRoot "installer\InvoiceMaker.wixproj") -c Release "-p:ProductVersion=$ProductVersion" "-p:PublishDir=$publishDir" "-p:PublishIconPath=$publishIconPath"
+    & dotnet build (Join-Path $repoRoot "installer\InvoiceMaker.wixproj") -c Release "-p:ProductVersion=$ProductVersion" "-p:PublishDir=$publishDir" "-p:PublishIconPath=$publishIconPath" "-p:LaunchHelperPath=$launcherPath"
     if ($LASTEXITCODE -ne 0) { Fail "WiX/MSBuild failed with exit code $LASTEXITCODE." }
 
     $msi = Get-ChildItem -Path (Join-Path $repoRoot "installer") -Filter "HesoraSetup.msi" -Recurse -File |

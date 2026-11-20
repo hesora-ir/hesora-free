@@ -323,8 +323,7 @@ func exportInvoiceFile(ctx context.Context, invoiceID int64, outputPath, format 
 		FontFamily: "IRANSansX", FontSize: 10, PrimaryColor: "#285082",
 		AccentColor: "#4777A8", ShowLogo: true, ShowTax: true, ShowBankAccounts: true,
 	}
-	// Hesora Free uses the built-in standard template; custom templates are a paid feature.
-	if templates.ProEnabled() {
+	if templates != nil {
 		savedTemplates, err := templates.DocumentTemplates(ctx)
 		if err != nil {
 			return fmt.Errorf("خواندن قالب‌های خروجی: %w", err)

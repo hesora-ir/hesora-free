@@ -49,6 +49,7 @@ QWidget#surface { background:white; border:1px solid #e5e9ef; border-radius:15px
 var hesoraLicensePublicKeyBase64 string
 
 func main() {
+	installerLicenseCode, installerTrial := parseInstallerLicenseArgs(os.Args[1:])
 	ctx := context.Background()
 	store, err := sqlite.OpenDefault(ctx)
 	if err != nil {
@@ -81,8 +82,50 @@ func main() {
 	licenseResult := verifier.Verify(licenseToken)
 	store.SetProEnabled(licenseResult.HasFeature(licensing.ProFullFeature))
 	templates.SetProEnabled(store.ProEnabled())
+	// Installer activation arguments are consumed above and may contain a license token.
+	// Keep them out of QApplication's arguments and plugin processing.
+	os.Args = []string{os.Args[0]}
 	qt.NewQApplication(os.Args)
 	qt.QGuiApplication_SetLayoutDirection(qt.RightToLeft)
+	trialDeadline := time.Time{}
+	var trialClock func() time.Time
+	if isTrialLicense(licenseResult) && licenseToken != "" {
+		fingerprint, fingerprintErr := licensing.DeviceFingerprint()
+		trialClient, clientErr := cloud.New(hesoraCloudURL)
+		if fingerprintErr == nil && clientErr == nil {
+			verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			trialStatus, verifyErr := trialClient.ValidateTrial(verifyCtx, installationID, fingerprint, licenseToken)
+			cancel()
+			if verifyErr == nil && licenseResult.Claims != nil && trialStatus.ExpiresAt == licenseResult.Claims.ExpiresAt && trialStatus.ExpiresAt > trialStatus.ServerTime {
+				trialClock = serverClock(trialStatus.ServerTime, time.Now())
+				verifier.Now = trialClock
+				licenseResult = verifier.Verify(licenseToken)
+				trialDeadline = time.Now().Add(time.Duration(trialStatus.ExpiresAt-trialStatus.ServerTime) * time.Second)
+			} else {
+				licenseResult = verifier.Verify("")
+			}
+		} else {
+			licenseResult = verifier.Verify("")
+		}
+	}
+	if !licenseResult.HasFeature(licensing.ProFullFeature) {
+		if installationErr != nil {
+			fmt.Fprintln(os.Stderr, "cannot create stable installation identity:", installationErr)
+			os.Exit(1)
+		}
+		var accepted bool
+		var trialRemaining time.Duration
+		licensePublicKeys, licenseToken, licenseResult, trialRemaining, trialClock, accepted = showLicenseGate(licenseFiles, installationID, licensePublicKeys, installerLicenseCode, installerTrial)
+		if !accepted {
+			os.Exit(0)
+		}
+		verifier = licensing.Verifier{PublicKeys: licensePublicKeys, InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures(), Now: trialClock}
+		if isTrialLicense(licenseResult) {
+			trialDeadline = time.Now().Add(trialRemaining)
+		}
+		store.SetProEnabled(true)
+		templates.SetProEnabled(true)
+	}
 
 	window := qt.NewQMainWindow2()
 	window.QWidget.SetWindowTitle("Hesora — هسورا")
@@ -107,7 +150,7 @@ func main() {
 	issuerPage := buildIssuerPage(tabs.QWidget, contacts, ctx)
 	expensesPage := buildExpensesPage(tabs.QWidget, store, ctx)
 
-	// Settings: persisted preferences, licensing, and the free/pro comparison.
+	// Settings: persisted preferences and licensing.
 	settingsPage := newPage(tabs.QWidget, "تنظیمات", "ظاهر برنامه، پیش‌فرض‌ها و وضعیت مجوز")
 	settingsScroll := qt.NewQScrollArea(tabs.QWidget)
 	settingsScroll.SetWidgetResizable(true)
@@ -150,12 +193,18 @@ func main() {
 	settingsPage.layout.AddWidget(currencySetting.QWidget)
 
 	settingsPage.layout.AddWidget(sectionHeading(settingsPage.widget, "مجوز نرم‌افزار"))
-	licenseState := qt.NewQLabel5("Hesora رایگان", settingsPage.widget)
+	licenseState := qt.NewQLabel5("مجوز فعال نیست", settingsPage.widget)
 	if store.ProEnabled() {
-		licenseState.SetText("Hesora Pro فعال")
+		if isTrialLicense(licenseResult) && licenseResult.Claims.ExpiresAt > 0 {
+			licenseState.SetText(fmt.Sprintf("دورهٔ آزمایشی — اعتبار باقی‌مانده: %d روز", (licenseResult.Claims.ExpiresAt-time.Now().Unix()+86399)/86400))
+		} else if licenseResult.Claims != nil && licenseResult.Claims.ExpiresAt > 0 {
+			licenseState.SetText(fmt.Sprintf("Hesora Pro — اعتبار باقی‌مانده: %d روز", (licenseResult.Claims.ExpiresAt-time.Now().Unix()+86399)/86400))
+		} else {
+			licenseState.SetText("Hesora Pro فعال · دائمی")
+		}
 	}
 	licenseState.SetStyleSheet("color: #718198; font-weight: 700; padding: 10px; background: #edf2f8; border-radius: 8px;")
-	licenseDescriptionText := "نسخهٔ رایگان شامل یک فروشگاه، حداکثر ۵۰ مشتری و ۲۰۰ فاکتور، قالب استاندارد و فونت‌های محدود است. اطلاعات بیشتر: hesora.ir"
+	licenseDescriptionText := "وضعیت مجوز این نصب در این بخش نمایش داده می‌شود. برای افزودن یا تمدید دسترسی، کد لایسنس را وارد کنید."
 	if store.ProEnabled() {
 		licenseDescriptionText = "لایسنس پرو فعال است. برای بکاپ ابری و مشاهده وضعیت حساب، در بخش اتصال به فضای ابری وارد شوید."
 	}
@@ -172,69 +221,86 @@ func main() {
 	}
 	licenseBuildStatus.SetStyleSheet("color: #52647d; padding: 10px; background: #edf2f8; border-radius: 8px;")
 	settingsPage.layout.AddWidget(licenseBuildStatus.QWidget)
-	licenseTokenInput := qt.NewQLineEdit(settingsPage.widget)
+	licenseDialog := qt.NewQDialog(window.QWidget)
+	licenseDialog.SetWindowTitle("افزودن لایسنس هسورا")
+	licenseDialog.SetMinimumWidth(460)
+	licenseDialogLayout := qt.NewQVBoxLayout2()
+	licenseTokenInput := qt.NewQLineEdit(licenseDialog.QWidget)
 	licenseTokenInput.SetPlaceholderText("کد لایسنس خریداری‌شده از hesora.ir")
-	settingsPage.layout.AddWidget(licenseTokenInput.QWidget)
-	activateLicense := qt.NewQPushButton5("فعال‌سازی لایسنس پرو", settingsPage.widget)
-	settingsPage.layout.AddWidget(activateLicense.QWidget)
-	licenseActivationStatus := qt.NewQLabel5("", settingsPage.widget)
+	licenseDialogLayout.AddWidget(qt.NewQLabel5("کد خریداری‌شده را وارد کنید؛ لایسنس به همین نصب متصل می‌شود.", licenseDialog.QWidget).QWidget)
+	licenseDialogLayout.AddWidget(licenseTokenInput.QWidget)
+	activateLicense := qt.NewQPushButton5("تأیید و فعال‌سازی", licenseDialog.QWidget)
+	licenseDialogLayout.AddWidget(activateLicense.QWidget)
+	licenseActivationStatus := qt.NewQLabel5("", licenseDialog.QWidget)
 	licenseActivationStatus.SetWordWrap(true)
-	settingsPage.layout.AddWidget(licenseActivationStatus.QWidget)
+	licenseDialogLayout.AddWidget(licenseActivationStatus.QWidget)
+	licenseDialog.SetLayout(licenseDialogLayout.QLayout)
+	licenseAddButton := qt.NewQPushButton5("افزودن لایسنس", settingsPage.widget)
+	if store.ProEnabled() && !isTrialLicense(licenseResult) {
+		licenseAddButton.SetVisible(false)
+	}
+	licenseAddButton.OnClicked(func() { licenseDialog.Exec() })
+	settingsPage.layout.AddWidget(licenseAddButton.QWidget)
 	connectCloudWithLicense := addCloudAndBackupSettings(settingsPage.widget, settingsPage.layout, store, licenseFiles, installationID, func() {
 		store.SetProEnabled(false)
 		templates.SetProEnabled(false)
-		licenseState.SetText("Hesora رایگان")
+		licenseState.SetText("مجوز فعال نیست")
 	})
 	licenseExpiryTimer := qt.NewQTimer2(settingsPage.widget.QObject)
 	licenseExpiryTimer.OnTimeout(func() {
 		token, _ := licenseFiles.ReadToken()
 		result := verifier.Verify(token)
+		if isTrialLicense(result) && !trialDeadline.IsZero() && !time.Now().Before(trialDeadline) {
+			result = verifier.Verify("")
+		}
 		store.SetProEnabled(result.HasFeature(licensing.ProFullFeature))
 		templates.SetProEnabled(store.ProEnabled())
 		if !store.ProEnabled() {
-			licenseState.SetText("Hesora رایگان")
+			licenseState.SetText("مجوز فعال نیست")
+			licenseAddButton.SetVisible(true)
+			var accepted bool
+			var trialRemaining time.Duration
+			licensePublicKeys, licenseToken, licenseResult, trialRemaining, trialClock, accepted = showLicenseGate(licenseFiles, installationID, licensePublicKeys, "", false)
+			if !accepted {
+				window.Close()
+				return
+			}
+			verifier = licensing.Verifier{PublicKeys: licensePublicKeys, InstallationID: installationID, FreeFeatures: licensing.DefaultFreeFeatures(), Now: trialClock}
+			if isTrialLicense(licenseResult) {
+				trialDeadline = time.Now().Add(trialRemaining)
+			} else {
+				trialDeadline = time.Time{}
+			}
+			store.SetProEnabled(true)
+			templates.SetProEnabled(true)
+			if isTrialLicense(licenseResult) {
+				licenseState.SetText(fmt.Sprintf("دورهٔ آزمایشی — اعتبار باقی‌مانده: %d روز", (licenseResult.Claims.ExpiresAt-time.Now().Unix()+86399)/86400))
+				licenseAddButton.SetVisible(true)
+			} else {
+				licenseState.SetText("Hesora Pro فعال")
+				licenseAddButton.SetVisible(false)
+				connectCloudWithLicense(licenseToken)
+			}
 		} else if result.Claims != nil && result.Claims.ExpiresAt > 0 {
-			licenseState.SetText(fmt.Sprintf("Hesora Pro — اعتبار باقی‌مانده: %d روز", (result.Claims.ExpiresAt-time.Now().Unix()+86399)/86400))
+			if isTrialLicense(result) {
+				licenseState.SetText(fmt.Sprintf("دورهٔ آزمایشی — اعتبار باقی‌مانده: %d روز", (result.Claims.ExpiresAt-time.Now().Unix()+86399)/86400))
+				licenseAddButton.SetVisible(true)
+			} else {
+				licenseState.SetText(fmt.Sprintf("Hesora Pro — اعتبار باقی‌مانده: %d روز", (result.Claims.ExpiresAt-time.Now().Unix()+86399)/86400))
+				licenseAddButton.SetVisible(false)
+			}
+		} else if store.ProEnabled() {
+			licenseState.SetText("Hesora Pro فعال · دائمی")
+			licenseAddButton.SetVisible(false)
 		}
 	})
 	licenseExpiryTimer.Start(60000)
 
-	settingsPage.layout.AddWidget(sectionHeading(settingsPage.widget, "مقایسهٔ نسخه رایگان و پرو"))
-	comparisonRows := [][3]string{
-		{"امکانات", "رایگان", "پرو (اشتراکی یا دائمی)"},
-		{"فروشگاه و ظرفیت", "۱ فروشگاه · ۵۰ مشتری · ۲۰۰ فاکتور", "استفادهٔ نامحدود و دائمی"},
-		{"دسترسی وب و همگام‌سازی", "ندارد", "همهٔ امکانات در نسخهٔ وب؛ فاکتورها تا ۲ سال"},
-		{"اعلان‌ها و به‌روزرسانی‌ها", "بدون اعلان و دریافت خودکار", "اعلان و دریافت آخرین تغییرات و نسخه‌ها"},
-		{"پشتیبان‌گیری ابری", "پشتیبان محلی", "پشتیبان‌گیری خودکار و همیشه‌در‌دسترس"},
-	}
-	for rowIndex, values := range comparisonRows {
-		row := qt.NewQHBoxLayout2()
-		for _, value := range values {
-			cell := qt.NewQLabel5(value, settingsPage.widget)
-			cell.SetWordWrap(true)
-			cell.SetMinimumWidth(200)
-			if rowIndex == 0 {
-				cell.SetStyleSheet("font-weight:700; color:#155eef; padding:8px;")
-			} else {
-				cell.SetStyleSheet("padding:8px; border-bottom:1px solid #e1e8f0;")
-			}
-			row.AddWidget(cell.QWidget)
-		}
-		settingsPage.layout.AddLayout(row.QLayout)
-	}
-	proPurchaseStatus := qt.NewQLabel5("برای خرید اشتراک یا لایسنس دائمی پرو به وب‌سایت Hesora مراجعه کنید.", settingsPage.widget)
-	proPurchaseStatus.SetWordWrap(true)
-	settingsPage.layout.AddWidget(proPurchaseStatus.QWidget)
-	proPurchase := qt.NewQPushButton5("خرید و دریافت لایسنس پرو", settingsPage.widget)
-	setInvoiceObjectName(proPurchase, "primaryAction")
-	proPurchase.OnClicked(func() {
-		if err := osExec.Command("rundll32.exe", "url.dll,FileProtocolHandler", "https://hesora.ir").Start(); err != nil {
-			proPurchaseStatus.SetText("بازکردن وب‌سایت ناموفق بود؛ نشانی hesora.ir را در مرورگر وارد کنید.")
-			return
-		}
-		proPurchaseStatus.SetText("وب‌سایت Hesora باز شد. مسیر و سامانهٔ خرید پس از راه‌اندازی سرویس در دسترس خواهد بود.")
+	productsLink := qt.NewQPushButton5("مشاهدهٔ محصولات و ثبت درخواست خرید در سایت", settingsPage.widget)
+	productsLink.OnClicked(func() {
+		_ = osExec.Command("rundll32.exe", "url.dll,FileProtocolHandler", "https://hesora.ir/products").Start()
 	})
-	settingsPage.layout.AddWidget(proPurchase.QWidget)
+	settingsPage.layout.AddWidget(productsLink.QWidget)
 
 	settingsStatus := qt.NewQLabel5("تنظیمات به‌صورت محلی ذخیره می‌شوند.", settingsPage.widget)
 	settingsStatus.SetWordWrap(true)
@@ -375,6 +441,8 @@ func main() {
 			}
 			applyAppearance()
 			licenseActivationStatus.SetText("لایسنس فعال شد و به‌صورت خودکار به همین نصب متصل شد.")
+			licenseAddButton.SetVisible(false)
+			licenseDialog.Accept()
 			connectCloudWithLicense(result.license.Token)
 		default:
 		}
@@ -414,6 +482,9 @@ func main() {
 			activationResults <- activationResult{keys: keys, license: license, err: err}
 		}()
 	})
+	if store.ProEnabled() && licenseToken != "" && !isTrialLicense(licenseResult) {
+		connectCloudWithLicense(licenseToken)
+	}
 
 	saveSettings := qt.NewQPushButton5("ذخیره تنظیمات", settingsPage.widget)
 	saveSettings.OnClicked(func() {
@@ -510,10 +581,10 @@ func main() {
 		sidebarLayout.AddWidget(button.QWidget)
 	}
 	sidebarLayout.AddStretch()
-	sidebarFooter := qt.NewQLabel5("نسخهٔ رایگان هسورا\nتنظیمات و پشتیبانی", sidebar)
-	sidebarFooter.SetWordWrap(true)
-	setInvoiceObjectName(sidebarFooter, "sidebarCaption")
-	sidebarLayout.AddWidget(sidebarFooter.QWidget)
+	supportMenu := qt.NewQPushButton5("درخواست پشتیبانی", sidebar)
+	setInvoiceObjectName(supportMenu, "navItem")
+	supportMenu.OnClicked(func() { tabs.SetCurrentIndex(6) })
+	sidebarLayout.AddWidget(supportMenu.QWidget)
 	navButtons[0].SetChecked(true)
 
 	content := qt.NewQWidget(shell)

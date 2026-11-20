@@ -102,6 +102,85 @@ func TestRejectRedirectAndExposeConflict(t *testing.T) {
 	}
 }
 
+func TestMagicLinkAndSupportTicketUseAuthenticatedAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-session" {
+			t.Errorf("missing authorization for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/api/v1/account/magic-link":
+			if r.Method != http.MethodPost {
+				t.Errorf("method=%s", r.Method)
+			}
+			fmt.Fprintf(w, `{"url":%q}`, "http://"+r.Host+"/magic/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")
+		case "/api/v1/support/tickets":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body["subject"] != "Help" || body["body"] != "Please help" {
+				t.Errorf("body=%v", body)
+			}
+			fmt.Fprint(w, `{"id":"ticket-123"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.token = "test-session"
+	link, err := c.MagicLink(context.Background())
+	if err != nil || !strings.HasPrefix(link, server.URL+"/magic/") {
+		t.Fatalf("link=%q err=%v", link, err)
+	}
+	id, err := c.CreateSupportTicket(context.Background(), "Help", "Please help")
+	if err != nil || id != "ticket-123" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+}
+
+func TestTrialStartAndServerValidation(t *testing.T) {
+	const installation = "0123456789abcdef0123456789abcdef"
+	const fingerprint = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	const token = "signed-trial-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		switch r.URL.Path {
+		case "/api/v1/licenses/trial":
+			if body["installation_id"] != installation || body["device_fingerprint"] != fingerprint {
+				t.Errorf("trial request=%v", body)
+			}
+			fmt.Fprintf(w, `{"id":"trial-id","token":%q,"expires_at":2000,"server_time":1000,"public_keys":{}}`, token)
+		case "/api/v1/licenses/trial/validate":
+			if body["installation_id"] != installation || body["device_fingerprint"] != fingerprint || body["token"] != token {
+				t.Errorf("validation request=%v", body)
+			}
+			fmt.Fprint(w, `{"expires_at":2000,"server_time":1500}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := c.StartTrial(context.Background(), installation, fingerprint)
+	if err != nil || grant.Token != token || grant.ServerTime != 1000 {
+		t.Fatalf("grant=%+v err=%v", grant, err)
+	}
+	status, err := c.ValidateTrial(context.Background(), installation, fingerprint, token)
+	if err != nil || status.ExpiresAt != 2000 || status.ServerTime != 1500 {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+}
+
 func TestImportBackupToWorkspaceEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/backups/0123456789abcdef0123456789abcdef/import" || r.Header.Get("Authorization") != "Bearer session" {

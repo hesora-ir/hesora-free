@@ -25,7 +25,7 @@ func buildIssuerPage(parent *qt.QWidget, contacts *application.Contacts, ctx con
 	add := qt.NewQPushButton5("+ افزودن فروشگاه", p.widget)
 	setInvoiceObjectName(add, "primaryAction")
 	p.layout.AddWidget(add.QWidget)
-	list, listLayout := newSurface(p.widget, "فروشگاه شما", "نسخهٔ رایگان: یک فروشگاه، ۵۰ مشتری و ۲۰۰ فاکتور.")
+	list, listLayout := newSurface(p.widget, "فروشگاه شما", "اطلاعات فروشگاه‌ها و صادرکنندگان فاکتور را مدیریت کنید.")
 	p.layout.AddWidget(list)
 	profiles, err := contacts.IssuerProfiles(ctx)
 	if err == nil {

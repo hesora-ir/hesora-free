@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hesora-ir/hesora-free/internal/domain"
-	"github.com/hesora-ir/hesora-free/internal/licensing"
 )
 
 func normalizeIssuerProfile(profile domain.IssuerProfile) domain.IssuerProfile {
@@ -67,16 +66,6 @@ func (s *Store) SaveIssuerProfile(ctx context.Context, profile domain.IssuerProf
 		return 0, fmt.Errorf("شروع تراکنش پروفایل صادرکننده: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if profile.ID == 0 && !s.ProEnabled() {
-		var profileCount int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM issuer_profiles").Scan(&profileCount); err != nil {
-			return 0, fmt.Errorf("بررسی سقف فروشگاه‌ها: %w", err)
-		}
-		if profileCount >= licensing.FreeIssuerProfileLimit {
-			return 0, fmt.Errorf("نسخهٔ رایگان فقط %d فروشگاه می‌پذیرد", licensing.FreeIssuerProfileLimit)
-		}
-	}
-
 	var id int64
 	if profile.ID == 0 {
 		result, err := tx.ExecContext(ctx, `

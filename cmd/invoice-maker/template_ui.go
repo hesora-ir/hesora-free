@@ -184,10 +184,6 @@ func buildTemplatePage(parent *qt.QWidget, templates *application.Templates, ctx
 		return t
 	}
 	save.OnClicked(func() {
-		if !templates.ProEnabled() {
-			status.SetText("ذخیره و ویرایش قالب اختصاصی به مجوز Pro نیاز دارد.")
-			return
-		}
 		t := readFields()
 		id, saveErr := templates.SaveTemplate(ctx, t)
 		if saveErr != nil {
@@ -236,7 +232,11 @@ func buildTemplatePage(parent *qt.QWidget, templates *application.Templates, ctx
 		}
 		status.SetText("پیش‌نمایش با تنظیمات فعلی باز شد.")
 	})
-	return p
+	scroll := qt.NewQScrollArea(parent)
+	scroll.SetWidgetResizable(true)
+	scroll.SetVerticalScrollBarPolicy(qt.ScrollBarAsNeeded)
+	scroll.SetWidget(p.widget)
+	return page{widget: scroll.QWidget, layout: p.layout}
 }
 
 func assetLabel(data string) string {

@@ -32,19 +32,21 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	urlInput.SetLayoutDirection(qt.LeftToRight)
 	urlInput.SetText(hesoraCloudURL)
 	urlInput.SetPlaceholderText("https://hesora.ir")
-	layout.AddWidget(qt.NewQLabel5("نشانی سرویس ابری (فقط سرویس مورد اعتماد خود را وارد کنید)", parent).QWidget)
-	layout.AddWidget(urlInput.QWidget)
+	urlInput.SetVisible(false)
 	email := qt.NewQLineEdit(parent)
 	email.SetLayoutDirection(qt.LeftToRight)
 	email.SetPlaceholderText("ایمیل حساب ابری")
-	layout.AddWidget(email.QWidget)
+	email.SetVisible(false)
 	password := qt.NewQLineEdit(parent)
 	password.SetEchoMode(qt.QLineEdit__Password)
 	password.SetPlaceholderText("رمز عبور حساب ابری")
-	layout.AddWidget(password.QWidget)
+	password.SetVisible(false)
 	login := qt.NewQPushButton5("ورود به حساب موجود (اختیاری)", parent)
 	logout := qt.NewQPushButton5("خروج از حساب ابری", parent)
 	logout.SetVisible(false)
+	cloudLogin := qt.NewQPushButton5("ورود به حساب ابری", parent)
+	cloudLogin.SetEnabled(false)
+	supportRequest := qt.NewQPushButton5("درخواست پشتیبانی", parent)
 	upload := qt.NewQPushButton5("بکاپ‌گیری ابری از اطلاعات فعلی", parent)
 	syncWorkspace := qt.NewQPushButton5("همگام‌سازی مستقیم با فضای کار وب", parent)
 	autoSync := qt.NewQCheckBox4("همگام‌سازی خودکار هر ۵ دقیقه (با تعارض، نسخهٔ دسکتاپ جایگزین نسخهٔ وب می‌شود)", parent)
@@ -63,6 +65,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	deleteBackup := qt.NewQPushButton5("حذف بکاپ انتخاب‌شده", parent)
 	validate := qt.NewQPushButton5("بررسی آنلاین اعتبار لایسنس", parent)
 	registerOnline := qt.NewQPushButton5("ساخت حساب فقط در وب‌سایت Hesora", parent)
+	registerOnline.SetVisible(false)
 	registerOnline.SetToolTip("ساخت حساب از داخل برنامهٔ دسکتاپ انجام نمی‌شود؛ ثبت‌نام را در وب‌سایت کامل کنید.")
 	registerOnline.OnClicked(func() {
 		if _, err := cloud.New(urlInput.Text()); err != nil {
@@ -73,8 +76,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			status.SetText("باز کردن صفحهٔ ثبت‌نام وب ناموفق بود؛ نشانی hesora.ir/register را در مرورگر باز کنید.")
 		}
 	})
-	layout.AddWidget(registerOnline.QWidget)
-	for _, b := range []*qt.QPushButton{login, logout, upload, syncWorkspace, refresh, validate} {
+	for _, b := range []*qt.QPushButton{cloudLogin, supportRequest, upload, syncWorkspace, refresh, validate} {
 		layout.AddWidget(b.QWidget)
 	}
 	layout.AddWidget(autoSync.QWidget)
@@ -86,13 +88,20 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 	layout.AddWidget(status.QWidget)
 	var client *cloud.Client
 	var startSync func(confirmDesktopWins bool)
+	requireClient := func() bool {
+		if client == nil {
+			status.SetText("ابتدا لایسنس را فعال کنید تا به فضای ابری متصل شوید.")
+			return false
+		}
+		return true
+	}
 	type completion struct {
 		apply func()
 		err   error
 	}
 	results := make(chan completion, 1)
 	busy := false
-	buttons := []*qt.QPushButton{local, login, logout, upload, syncWorkspace, refresh, download, restoreBackup, deleteBackup, validate}
+	buttons := []*qt.QPushButton{local, login, logout, cloudLogin, supportRequest, upload, syncWorkspace, refresh, download, restoreBackup, deleteBackup, validate}
 	timer := qt.NewQTimer2(parent.QObject)
 	timer.OnTimeout(func() {
 		select {
@@ -161,7 +170,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 		if busy || strings.TrimSpace(licenseToken) == "" {
 			return
 		}
-		base := urlInput.Text()
+		base := hesoraCloudURL
 		run(func() (func(), error) {
 			next, err := cloud.New(base)
 			if err != nil {
@@ -185,6 +194,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 				login.SetVisible(false)
 				logout.SetVisible(true)
 				status.SetText("اتصال با حساب خرید لایسنس برقرار شد.\n" + accountText(a))
+				cloudLogin.SetEnabled(true)
 				if autoSync.IsChecked() {
 					startSync(false)
 				}
@@ -192,7 +202,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 		})
 	}
 	login.OnClicked(func() {
-		base, emailValue, passwordValue := urlInput.Text(), email.Text(), password.Text()
+		base, emailValue, passwordValue := hesoraCloudURL, email.Text(), password.Text()
 		password.SetText("")
 		run(func() (func(), error) {
 			next, err := cloud.New(base)
@@ -223,13 +233,47 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 			}, nil
 		})
 	})
-	requireClient := func() bool {
-		if client == nil {
-			status.SetText("ابتدا وارد حساب ابری شوید.")
-			return false
+	cloudLogin.OnClicked(func() {
+		if !requireClient() {
+			return
 		}
-		return true
-	}
+		current := client
+		run(func() (func(), error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			link, err := current.MagicLink(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return func() {
+				if !qt.QDesktopServices_OpenUrl(qt.NewQUrl3(link)) {
+					status.SetText("بازکردن مرورگر پیش‌فرض ناموفق بود؛ پیوند ورود ساخته شد اما باز نشد.")
+				} else {
+					status.SetText("پیوند امن و یک‌بارمصرف ورود در مرورگر پیش‌فرض باز شد.")
+				}
+			}, nil
+		})
+	})
+	supportRequest.OnClicked(func() {
+		if !requireClient() {
+			return
+		}
+		subject := strings.TrimSpace(qt.QInputDialog_GetText(parent, "درخواست پشتیبانی", "عنوان تیکت"))
+		if subject == "" {
+			return
+		}
+		body := strings.TrimSpace(qt.QInputDialog_GetMultiLineText(parent, "درخواست پشتیبانی", "شرح درخواست"))
+		if body == "" {
+			return
+		}
+		current := client
+		run(func() (func(), error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			id, err := current.CreateSupportTicket(ctx, subject, body)
+			return func() { status.SetText("تیکت پشتیبانی ثبت شد: " + id) }, err
+		})
+	})
 	logout.OnClicked(func() {
 		if !requireClient() {
 			return
@@ -581,7 +625,7 @@ func addCloudAndBackupSettings(parent *qt.QWidget, layout *qt.QVBoxLayout, store
 					return func() {
 						files.ClearToken()
 						onRevoked()
-						status.SetText("لایسنس توسط سرور رد شد؛ نسخه رایگان فعال شد. اطلاعات شما محفوظ است.")
+						status.SetText("لایسنس توسط سرور رد شد؛ اتصال ابری متوقف شد. اطلاعات محلی شما محفوظ است.")
 					}, nil
 				}
 				return nil, err

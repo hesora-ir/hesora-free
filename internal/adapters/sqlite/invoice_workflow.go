@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hesora-ir/hesora-free/internal/domain"
-	"github.com/hesora-ir/hesora-free/internal/licensing"
 )
 
 func (s *Store) CreateInvoiceDraft(ctx context.Context, doc domain.InvoiceDocument) (int64, string, error) {
@@ -26,15 +25,6 @@ func (s *Store) CreateInvoiceDraft(ctx context.Context, doc domain.InvoiceDocume
 		return 0, "", fmt.Errorf("شروع تراکنش فاکتور: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if doc.Kind == "invoice" && !s.ProEnabled() {
-		var count int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM invoices WHERE kind='invoice' AND status<>'void'").Scan(&count); err != nil {
-			return 0, "", fmt.Errorf("بررسی سقف فاکتورها: %w", err)
-		}
-		if count >= licensing.FreeInvoiceLimit {
-			return 0, "", fmt.Errorf("نسخهٔ رایگان حداکثر %d فاکتور می‌پذیرد", licensing.FreeInvoiceLimit)
-		}
-	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	series := strings.TrimSpace(doc.Numbering.Series)
 	var numberValue int64
@@ -276,13 +266,6 @@ func (s *Store) ConvertProforma(ctx context.Context, id int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM invoices WHERE kind='invoice' AND status<>'void'").Scan(&count); err != nil {
-		return fmt.Errorf("بررسی سقف فاکتورها: %w", err)
-	}
-	if !s.ProEnabled() && count >= licensing.FreeInvoiceLimit {
-		return fmt.Errorf("نسخهٔ رایگان حداکثر %d فاکتور می‌پذیرد", licensing.FreeInvoiceLimit)
-	}
 	var kind, status string
 	var itemCount int
 	err = tx.QueryRowContext(ctx, "SELECT kind,status,(SELECT COUNT(*) FROM invoice_items WHERE invoice_id=invoices.id) FROM invoices WHERE id=?", id).Scan(&kind, &status, &itemCount)
