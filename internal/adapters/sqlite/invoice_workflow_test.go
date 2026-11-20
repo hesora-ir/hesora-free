@@ -82,3 +82,41 @@ func TestCreateInvoiceDraftRollsBackNumberingOnFailure(t *testing.T) {
 		t.Fatalf("number after rollback = %q", number)
 	}
 }
+
+func TestSuggestedInvoiceItems(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "suggestions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	doc := testInvoiceDraft()
+	doc.Items[0] = domain.InvoiceItem{Description: "کابل cat 6 لگراند", Unit: "متر", Quantity: 1, UnitPrice: 1000}
+	id, _, err := store.CreateInvoiceDraft(ctx, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.SuggestedInvoiceItems(ctx, "کابل", domain.CurrencyToman)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("draft suggested: %v, %v", items, err)
+	}
+	if err = store.IssueInvoice(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	doc.Items[0].UnitPrice = 2000
+	id, _, err = store.CreateInvoiceDraft(ctx, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.IssueInvoice(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.SuggestedInvoiceItems(ctx, "کابل", domain.CurrencyToman)
+	if err != nil || len(items) != 1 || items[0].UnitPrice != 2000 || items[0].Unit != "متر" {
+		t.Fatalf("suggestions: %v, %v", items, err)
+	}
+	items, err = store.SuggestedInvoiceItems(ctx, "کابل", domain.CurrencyRial)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("wrong currency: %v, %v", items, err)
+	}
+}

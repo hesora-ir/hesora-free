@@ -374,3 +374,34 @@ func (s *Store) UpdateInvoiceDraft(ctx context.Context, doc domain.InvoiceDocume
 	_ = currentNumber // the issued/reserved document number is immutable during edits
 	return tx.Commit()
 }
+
+// SuggestedInvoiceItems uses issued invoices as the source of reusable items.
+func (s *Store) SuggestedInvoiceItems(ctx context.Context, query string, currency domain.Currency) ([]domain.InvoiceItem, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT i.description, i.unit, i.unit_price FROM invoice_items i JOIN invoices d ON d.id=i.invoice_id WHERE d.status='issued' AND d.currency=? AND instr(lower(i.description), lower(?)) > 0 ORDER BY d.updated_at DESC, d.id DESC, i.position DESC`, currency, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []domain.InvoiceItem
+	seen := map[string]bool{}
+	for rows.Next() {
+		var item domain.InvoiceItem
+		if err := rows.Scan(&item.Description, &item.Unit, &item.UnitPrice); err != nil {
+			return nil, err
+		}
+		key := strings.ToLower(strings.TrimSpace(item.Description))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, item)
+		if len(result) == 20 {
+			break
+		}
+	}
+	return result, rows.Err()
+}

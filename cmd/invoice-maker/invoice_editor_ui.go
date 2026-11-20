@@ -302,6 +302,34 @@ func buildInvoicePage(parent *qt.QWidget, contacts *application.Contacts, invoic
 		editor := &invoiceItemEditor{row: row, name: name, quantity: quantity, unit: unit, price: price, remove: remove, total: total, discount: item.Discount}
 		itemEditors = append(itemEditors, editor)
 		itemsLayout.AddWidget(row)
+		model := qt.NewQStringListModel3(row.QObject)
+		completer := qt.NewQCompleter5(model.QAbstractItemModel, row.QObject)
+		completer.SetFilterMode(qt.MatchContains)
+		name.SetCompleter(completer)
+		suggestions := map[string]domain.InvoiceItem{}
+		name.OnTextEdited(func(text string) {
+			items, err := invoices.SuggestedItems(ctx, text, currency)
+			if err != nil {
+				model.SetStringList(nil)
+				return
+			}
+			labels := make([]string, 0, len(items))
+			suggestions = map[string]domain.InvoiceItem{}
+			for _, candidate := range items {
+				label := fmt.Sprintf("%s ? %s %s", candidate.Description, formatInvoiceMoney(int64(candidate.UnitPrice)), currencyName)
+				labels = append(labels, label)
+				suggestions[label] = candidate
+			}
+			model.SetStringList(labels)
+		})
+		completer.OnActivated(func(label string) {
+			if candidate, ok := suggestions[label]; ok {
+				name.SetText(candidate.Description)
+				unit.SetText(candidate.Unit)
+				price.SetText(strconv.FormatInt(int64(candidate.UnitPrice), 10))
+				updateTotals()
+			}
+		})
 		name.OnTextChanged(func(string) { updateTotals() })
 		quantity.OnTextChanged(func(string) { updateTotals() })
 		price.OnTextChanged(func(string) { updateTotals() })

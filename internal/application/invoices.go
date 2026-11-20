@@ -98,3 +98,14 @@ func (s *Invoices) UpdateDraft(ctx context.Context, doc domain.InvoiceDocument) 
 	}
 	return store.UpdateInvoiceDraft(ctx, doc)
 }
+
+// SuggestedItems returns recently issued items in the requested currency.
+func (s *Invoices) SuggestedItems(ctx context.Context, query string, currency domain.Currency) ([]domain.InvoiceItem, error) {
+	store, ok := s.store.(interface {
+		SuggestedInvoiceItems(context.Context, string, domain.Currency) ([]domain.InvoiceItem, error)
+	})
+	if !ok {
+		return nil, errors.New("???? ?????? ?? ??????? ????? ???????? ???????")
+	}
+	return store.SuggestedInvoiceItems(ctx, query, currency)
+}

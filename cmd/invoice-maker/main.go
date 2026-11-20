@@ -241,7 +241,11 @@ func main() {
 	}
 	licenseAddButton.OnClicked(func() { licenseDialog.Exec() })
 	settingsPage.layout.AddWidget(licenseAddButton.QWidget)
-	connectCloudWithLicense := addCloudAndBackupSettings(settingsPage.widget, settingsPage.layout, store, licenseFiles, installationID, func() {
+	cloudContainer := qt.NewQWidget(settingsPage.widget)
+	cloudLayout := qt.NewQVBoxLayout2()
+	cloudContainer.SetLayout(cloudLayout.QLayout)
+	cloudContainer.SetVisible(false)
+	connectCloudWithLicense := addCloudAndBackupSettings(cloudContainer, cloudLayout, store, licenseFiles, installationID, func() {
 		store.SetProEnabled(false)
 		templates.SetProEnabled(false)
 		licenseState.SetText("مجوز فعال نیست")
@@ -581,9 +585,15 @@ func main() {
 		sidebarLayout.AddWidget(button.QWidget)
 	}
 	sidebarLayout.AddStretch()
+	addWebLoginButton(sidebar, sidebarLayout)
 	supportMenu := qt.NewQPushButton5("درخواست پشتیبانی", sidebar)
 	setInvoiceObjectName(supportMenu, "navItem")
-	supportMenu.OnClicked(func() { tabs.SetCurrentIndex(6) })
+	supportMenu.OnClicked(func() {
+		tabs.SetCurrentIndex(8)
+		for _, button := range navButtons {
+			button.SetChecked(false)
+		}
+	})
 	sidebarLayout.AddWidget(supportMenu.QWidget)
 	navButtons[0].SetChecked(true)
 
