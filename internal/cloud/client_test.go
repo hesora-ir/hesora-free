@@ -201,7 +201,11 @@ func TestShareInvoiceEndpoint(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/invoices/share" || r.Header.Get("Authorization") != "Bearer session" {
 			t.Errorf("unexpected share request: %s %s", r.Method, r.URL.Path)
 		}
-		fmt.Fprint(w, `{"url":"https://hesora.ir/share/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["Number"] != "FACT-1" || body["Status"] != "issued" {
+			t.Errorf("invalid share request body: %v (%v)", body, err)
+		}
+		fmt.Fprintf(w, `{"url":%q}`, "http://"+r.Host+"/share/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	}))
 	defer server.Close()
 	c, _ := New(server.URL)
@@ -209,6 +213,17 @@ func TestShareInvoiceEndpoint(t *testing.T) {
 	link, err := c.ShareInvoice(context.Background(), map[string]any{"Number": "FACT-1", "Status": "issued"})
 	if err != nil || !strings.Contains(link, "/share/") {
 		t.Fatalf("share link=%q error=%v", link, err)
+	}
+}
+
+func TestShareInvoiceRejectsLinkToAnotherHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"url":"https://other.example/share/fake"}`)
+	}))
+	defer server.Close()
+	c, _ := New(server.URL)
+	if _, err := c.ShareInvoice(context.Background(), map[string]any{"Number": "FACT-1"}); err == nil {
+		t.Fatal("accepted a share URL on another host")
 	}
 }
 

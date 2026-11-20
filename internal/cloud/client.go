@@ -433,9 +433,13 @@ func (c *Client) ShareInvoice(ctx context.Context, data map[string]any) (string,
 	var result struct {
 		URL string `json:"url"`
 	}
-	err := c.json(ctx, http.MethodPost, "/workspace/invoices/share", map[string]any{"data": data}, &result)
-	if err == nil && result.URL == "" {
-		err = errors.New("پاسخ پیوند اشتراک‌گذاری خالی است")
+	err := c.json(ctx, http.MethodPost, "/workspace/invoices/share", data, &result)
+	if err == nil {
+		parsed, parseErr := url.Parse(result.URL)
+		base, _ := url.Parse(c.baseURL)
+		if parseErr != nil || parsed.Scheme != base.Scheme || parsed.Host != base.Host || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, "/share/") {
+			err = errors.New("نشانی پیوند اشتراک‌گذاری معتبر نیست")
+		}
 	}
 	return result.URL, err
 }

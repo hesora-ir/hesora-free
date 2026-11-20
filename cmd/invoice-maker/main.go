@@ -529,6 +529,8 @@ func main() {
 	tabs.AddTab(expensesPage.widget, "هزینه‌ها")
 	tabs.AddTab(settingsScroll.QWidget, "تنظیمات")
 	tabs.AddTab(templatePage.widget, "قالب چاپ")
+	supportPage := buildSupportPage(tabs.QWidget)
+	supportIndex := tabs.AddTab(supportPage.widget, "درخواست پشتیبانی")
 	tabs.OnCurrentChanged(func(index int) {
 		if index == 0 {
 			refreshDashboard()
@@ -568,7 +570,7 @@ func main() {
 		title string
 		icon  string
 		index int
-	}{{"نمای کلی", "⌂", 0}, {"صدور فاکتور", "+", 1}, {"فاکتورها و قالب‌ها", "▤", 2}, {"مشتریان", "♙", 3}, {"فروشگاه و اطلاعات بانکی", "⌂", 4}, {"هزینه‌ها", "−", 5}, {"تنظیمات و لایسنس", "⚙", 6}, {"قالب چاپ", "▧", 7}}
+	}{{"نمای کلی", "⌂", 0}, {"صدور فاکتور", "+", 1}, {"فاکتورها و قالب‌ها", "▤", 2}, {"مشتریان", "♙", 3}, {"فروشگاه و اطلاعات بانکی", "⌂", 4}, {"هزینه‌ها", "−", 5}, {"تنظیمات و لایسنس", "⚙", 6}, {"قالب چاپ", "▧", 7}, {"درخواست پشتیبانی", "؟", supportIndex}}
 	navButtons := make([]*qt.QPushButton, 0, len(navItems))
 	for _, item := range navItems {
 		button := qt.NewQPushButton5(item.icon+"   "+item.title, sidebar)
@@ -586,15 +588,6 @@ func main() {
 	}
 	sidebarLayout.AddStretch()
 	addWebLoginButton(sidebar, sidebarLayout)
-	supportMenu := qt.NewQPushButton5("درخواست پشتیبانی", sidebar)
-	setInvoiceObjectName(supportMenu, "navItem")
-	supportMenu.OnClicked(func() {
-		tabs.SetCurrentIndex(8)
-		for _, button := range navButtons {
-			button.SetChecked(false)
-		}
-	})
-	sidebarLayout.AddWidget(supportMenu.QWidget)
 	navButtons[0].SetChecked(true)
 
 	content := qt.NewQWidget(shell)

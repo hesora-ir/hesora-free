@@ -177,18 +177,29 @@ QPushButton#secondaryAction { background: #edf3fb; color: #23456f; border: 1px s
 				if record.Currency == "IRR" {
 					currency = "ریال"
 				}
-				amountRow := qt.NewQHBoxLayout2()
-				totalLabel := qt.NewQLabel5("مبلغ کل: "+formatCustomerMoney(record.Total)+" "+currency, card)
+				totalLabel := qt.NewQLabel5("مبلغ کل: \u2066"+formatInvoiceMoney(record.Total)+"\u2069 "+currency, card)
 				setInvoiceObjectName(totalLabel, "invoiceAmount")
-				totalLabel.SetWordWrap(true)
-				amountRow.AddWidget(totalLabel.QWidget)
-				amountRow.AddStretch()
-				balanceLabel := qt.NewQLabel5("مانده: "+formatCustomerMoney(record.Balance)+" "+currency, card)
+				cardLayout.AddWidget(totalLabel.QWidget)
+				balanceLabel := qt.NewQLabel5("مانده: \u2066"+formatInvoiceMoney(record.Balance)+"\u2069 "+currency, card)
 				setInvoiceObjectName(balanceLabel, "invoiceMuted")
-				amountRow.AddWidget(balanceLabel.QWidget)
-				cardLayout.AddLayout(amountRow.QLayout)
+				cardLayout.AddWidget(balanceLabel.QWidget)
 
 				actions := qt.NewQHBoxLayout2()
+				online := qt.NewQPushButton5("مشاهده و اشتراک آنلاین", card)
+				setInvoiceObjectName(online, "secondaryAction")
+				if record.Status != "issued" {
+					online.SetEnabled(false)
+					online.SetToolTip("برای اشتراک آنلاین ابتدا سند را صادر کنید.")
+				}
+				online.OnClicked(func() {
+					doc, err := invoices.Get(ctx, record.ID)
+					if err != nil {
+						qt.QMessageBox_Critical(parent, "خواندن فاکتور ناموفق بود", err.Error())
+						return
+					}
+					showOnlineInvoiceShare(parent, doc)
+				})
+				cardLayout.AddWidget(online.QWidget)
 				if record.Kind == "proforma" && record.Status == "draft" && record.DocumentType != "quotation" {
 					convert := qt.NewQPushButton5("تبدیل به فاکتور", card)
 					convert.OnClicked(func() {
